@@ -58,3 +58,40 @@ jobs:
       - name: Terraform Apply
         working-directory: infra
         run: terraform apply -auto-approve tfplan
+
+      # ── Frontend web ────────────────────────────────────────────────────────
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build frontend
+        working-directory: app
+        run: npm ci && npm run build
+
+      - name: Sync assets a S3 (caché larga)
+        working-directory: infra
+        run: |
+          WEB_BUCKET=$(terraform output -raw web_bucket_name)
+          aws s3 sync ../app/dist/ s3://$WEB_BUCKET --delete \
+            --exclude "index.html" \
+            --cache-control "max-age=31536000,immutable"
+
+      - name: Subir index.html (sin caché)
+        working-directory: infra
+        run: |
+          WEB_BUCKET=$(terraform output -raw web_bucket_name)
+          aws s3 cp ../app/dist/index.html s3://$WEB_BUCKET/index.html \
+            --cache-control "no-cache,no-store,must-revalidate" \
+            --content-type "text/html"
+
+      - name: Invalidar CloudFront
+        working-directory: infra
+        run: |
+          CF_ID=$(terraform output -raw cloudfront_distribution_id)
+          aws cloudfront create-invalidation \
+            --distribution-id $CF_ID \
+            --paths "/index.html"
