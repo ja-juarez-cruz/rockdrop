@@ -9,7 +9,7 @@ from jose import JWTError
 from db import get_session, players_table, get_all_players
 from auth import validate_qr_token
 from ws import broadcast
-from models import JoinSessionRequest, ok, err
+from models import JoinSessionRequest, ok, err, make_response
 
 logger = Logger()
 
@@ -22,31 +22,31 @@ REGION = __import__("os").environ.get("AWS_REGION", "us-east-1")
 def handler(event: dict, context: LambdaContext) -> dict:
     session_id = event.get("pathParameters", {}).get("session_id")
     if not session_id:
-        return {"statusCode": 400, "body": json.dumps(err("Missing session_id"))}
+        return make_response(400, err("Missing session_id"))
 
     try:
         body = JoinSessionRequest.model_validate(json.loads(event.get("body", "{}")))
     except Exception as e:
-        return {"statusCode": 400, "body": json.dumps(err(str(e)))}
+        return make_response(400, err(str(e)))
 
     try:
         claims = validate_qr_token(body.token)
     except JWTError as e:
-        return {"statusCode": 401, "body": json.dumps(err(f"Invalid or expired token: {e}"))}
+        return make_response(401, err(f"Invalid or expired token: {e}"))
 
     if claims.get("session_id") != session_id:
-        return {"statusCode": 403, "body": json.dumps(err("Token does not match session"))}
+        return make_response(403, err("Token does not match session"))
 
     session = get_session(session_id)
     if not session:
-        return {"statusCode": 404, "body": json.dumps(err("Session not found"))}
+        return make_response(404, err("Session not found"))
 
     if session["status"] != "WAITING":
-        return {"statusCode": 409, "body": json.dumps(err("Session is not accepting players"))}
+        return make_response(409, err("Session is not accepting players"))
 
     current_players = get_all_players(session_id)
     if len(current_players) >= int(session["max_players"]):
-        return {"statusCode": 409, "body": json.dumps(err("Session is full"))}
+        return make_response(409, err("Session is full"))
 
     player_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat() + "Z"
@@ -70,13 +70,9 @@ def handler(event: dict, context: LambdaContext) -> dict:
 
     logger.info("Player joined", extra={"session_id": session_id, "player_id": player_id})
 
-    return {
-        "statusCode": 201,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(ok({
+    return make_response(201, ok({
             "player_id": player_id,
             "session_id": session_id,
             "display_name": body.display_name,
             "ws_url": ws_url,
-        })),
-    }
+        }))

@@ -1,7 +1,20 @@
+import json
+from decimal import Decimal
 from enum import Enum
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 import uuid
+
+
+class _DecimalEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, Decimal):
+            return int(o) if o % 1 == 0 else float(o)
+        return super().default(o)
+
+
+def json_dumps(obj) -> str:
+    return json.dumps(obj, cls=_DecimalEncoder)
 
 
 class GameMode(str, Enum):
@@ -55,9 +68,25 @@ class WsEvent(BaseModel):
     payload: Dict
 
 
+_CORS_HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type,x-host-token",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+}
+
+
 def ok(data: dict) -> dict:
     return {"data": data, "error": None}
 
 
-def err(message: str, status_code: int = 400) -> dict:
-    return {"statusCode": status_code, "body": {"data": None, "error": message}}
+def err(message: str) -> dict:
+    return {"data": None, "error": message}
+
+
+def make_response(status_code: int, body: dict) -> dict:
+    return {
+        "statusCode": status_code,
+        "headers": _CORS_HEADERS,
+        "body": json_dumps(body),
+    }

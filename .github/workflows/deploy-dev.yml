@@ -33,7 +33,8 @@ jobs:
 
       - name: Build common layer
         run: |
-          pip3 install -r lambdas/layers/requirements.txt -t lambdas/layers/common/python/ --quiet
+          pip3 install -r lambdas/layers/requirements.txt -t lambdas/layers/common/python/ --quiet \
+            --platform manylinux2014_x86_64 --only-binary=:all: --python-version 3.12
           cp lambdas/layers/src/*.py lambdas/layers/common/python/
 
       # ── Infraestructura ─────────────────────────────────────────────────────

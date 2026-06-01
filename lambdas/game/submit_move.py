@@ -11,7 +11,7 @@ from aws_lambda_powertools.utilities.idempotency import (
 
 from db import get_session, moves_table, get_all_players
 from ws import broadcast
-from models import SubmitMoveRequest, ok, err
+from models import SubmitMoveRequest, ok, err, make_response, json_dumps
 
 logger = Logger()
 events_client = boto3.client("events")
@@ -21,19 +21,19 @@ events_client = boto3.client("events")
 def handler(event: dict, context: LambdaContext) -> dict:
     session_id = event.get("pathParameters", {}).get("session_id")
     if not session_id:
-        return {"statusCode": 400, "body": json.dumps(err("Missing session_id"))}
+        return make_response(400, err("Missing session_id"))
 
     try:
         body = SubmitMoveRequest.model_validate(json.loads(event.get("body", "{}")))
     except Exception as e:
-        return {"statusCode": 400, "body": json.dumps(err(str(e)))}
+        return make_response(400, err(str(e)))
 
     session = get_session(session_id)
     if not session:
-        return {"statusCode": 404, "body": json.dumps(err("Session not found"))}
+        return make_response(404, err("Session not found"))
 
     if session["status"] != "PLAYING":
-        return {"statusCode": 409, "body": json.dumps(err("Session is not in PLAYING status"))}
+        return make_response(409, err("Session is not in PLAYING status"))
 
     pk = f"{session_id}#{body.round_number}"
 
@@ -49,7 +49,7 @@ def handler(event: dict, context: LambdaContext) -> dict:
             ConditionExpression="attribute_not_exists(player_id)",
         )
     except moves_table.meta.client.exceptions.ConditionalCheckFailedException:
-        return {"statusCode": 409, "body": json.dumps(err("Move already submitted for this round"))}
+        return make_response(409, err("Move already submitted for this round"))
 
     all_players = get_all_players(session_id)
     active_players = [p for p in all_players if p.get("status") == "CONNECTED"]
@@ -75,7 +75,7 @@ def handler(event: dict, context: LambdaContext) -> dict:
         events_client.put_events(Entries=[{
             "Source": "rockdrop.game",
             "DetailType": "AllMovesSubmitted",
-            "Detail": json.dumps({
+            "Detail": json_dumps({
                 "session_id": session_id,
                 "round_number": body.round_number,
             }),
@@ -83,12 +83,8 @@ def handler(event: dict, context: LambdaContext) -> dict:
         logger.info("All moves submitted, dispatched resolve event",
                     extra={"session_id": session_id, "round_number": body.round_number})
 
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(ok({
+    return make_response(200, ok({
             "accepted": True,
             "round_number": body.round_number,
-            "waiting_for": max(waiting_for, 0),
-        })),
+            "waiting_for": max(waiting_for, 0))),
     }

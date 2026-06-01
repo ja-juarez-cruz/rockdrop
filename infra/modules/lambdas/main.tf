@@ -14,6 +14,11 @@ variable "ws_stage" {
   type = string
 }
 
+variable "web_app_url" {
+  type    = string
+  default = ""
+}
+
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
@@ -47,6 +52,7 @@ locals {
     ROUNDS_TABLE   = var.dynamodb_tables["rounds"]
     WS_API_ID      = var.ws_api_id
     WS_STAGE       = var.ws_stage
+    WEB_APP_URL    = var.web_app_url
     POWERTOOLS_SERVICE_NAME = "rockdrop"
     LOG_LEVEL      = "INFO"
   }

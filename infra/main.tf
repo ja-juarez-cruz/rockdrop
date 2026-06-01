@@ -35,6 +35,7 @@ module "lambdas" {
   dynamodb_tables = module.dynamodb.table_names
   ws_api_id       = module.api_gateway_ws.api_id
   ws_stage        = var.ws_stage
+  web_app_url     = var.web_app_url
 }
 
 module "api_gateway_rest" {

@@ -6,7 +6,7 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from db import get_session, sessions_table, rounds_table
 from ws import broadcast
-from models import ok, err
+from models import ok, err, make_response
 
 logger = Logger()
 
@@ -52,15 +52,15 @@ def advance(bracket: dict, round_results: list[dict]) -> dict:
 def handler(event: dict, context: LambdaContext) -> dict:
     session_id = event.get("pathParameters", {}).get("session_id")
     if not session_id:
-        return {"statusCode": 400, "body": json.dumps(err("Missing session_id"))}
+        return make_response(400, err("Missing session_id"))
 
     session = get_session(session_id)
     if not session:
-        return {"statusCode": 404, "body": json.dumps(err("Session not found"))}
+        return make_response(404, err("Session not found"))
 
     bracket = session.get("bracket")
     if not bracket:
-        return {"statusCode": 409, "body": json.dumps(err("No bracket found — generate it first"))}
+        return make_response(409, err("No bracket found — generate it first"))
 
     current_round = bracket["current_round"]
     resp = rounds_table.get_item(Key={"session_id": session_id, "round_number": str(current_round)})
@@ -80,8 +80,4 @@ def handler(event: dict, context: LambdaContext) -> dict:
 
     logger.info("Bracket advanced", extra={"session_id": session_id, "next_round": updated_bracket.get("current_round")})
 
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(ok({"bracket": updated_bracket})),
-    }
+    return make_response(200, ok({"bracket": updated_bracket}))

@@ -7,7 +7,7 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from db import get_session, get_all_players, sessions_table
 from ws import broadcast
-from models import ok, err
+from models import ok, err, make_response
 
 logger = Logger()
 
@@ -49,18 +49,18 @@ def build_bracket(players: list[dict]) -> dict:
 def handler(event: dict, context: LambdaContext) -> dict:
     session_id = event.get("pathParameters", {}).get("session_id")
     if not session_id:
-        return {"statusCode": 400, "body": json.dumps(err("Missing session_id"))}
+        return make_response(400, err("Missing session_id"))
 
     session = get_session(session_id)
     if not session:
-        return {"statusCode": 404, "body": json.dumps(err("Session not found"))}
+        return make_response(404, err("Session not found"))
 
     if session.get("mode") != "TOURNAMENT":
-        return {"statusCode": 409, "body": json.dumps(err("Session is not in TOURNAMENT mode"))}
+        return make_response(409, err("Session is not in TOURNAMENT mode"))
 
     players = get_all_players(session_id)
     if len(players) < 2:
-        return {"statusCode": 409, "body": json.dumps(err("Need at least 2 players"))}
+        return make_response(409, err("Need at least 2 players"))
 
     bracket = build_bracket(players)
 
@@ -74,8 +74,4 @@ def handler(event: dict, context: LambdaContext) -> dict:
     broadcast(session_id, "BRACKET_UPDATED", {"bracket": bracket})
     logger.info("Bracket generated", extra={"session_id": session_id, "size": bracket["size"]})
 
-    return {
-        "statusCode": 201,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(ok({"bracket": bracket})),
-    }
+    return make_response(201, ok({"bracket": bracket}))

@@ -16,3 +16,14 @@ variable "ws_stage" {
   type    = string
   default = "prod"
 }
+
+variable "web_bucket_name" {
+  type        = string
+  description = "Nombre del bucket S3 para el frontend. Ej: rockdrop-web-dev"
+}
+
+variable "web_app_url" {
+  type        = string
+  default     = ""
+  description = "URL del frontend (CloudFront). Rellenar tras el primer deploy con el output web_app_url."
+}

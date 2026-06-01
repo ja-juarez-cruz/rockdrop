@@ -12,3 +12,18 @@ output "dynamodb_table_names" {
   description = "DynamoDB table names"
   value       = module.dynamodb.table_names
 }
+
+output "web_app_url" {
+  description = "URL del frontend (CloudFront). Copiar a dev.tfvars/prod.tfvars como web_app_url."
+  value       = "https://${aws_cloudfront_distribution.web_app.domain_name}"
+}
+
+output "web_bucket_name" {
+  description = "Nombre del bucket S3 donde subir el build del frontend"
+  value       = aws_s3_bucket.web_app.id
+}
+
+output "cloudfront_distribution_id" {
+  description = "ID de la distribución CloudFront (para invalidaciones)"
+  value       = aws_cloudfront_distribution.web_app.id
+}

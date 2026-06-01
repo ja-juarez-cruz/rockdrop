@@ -1,4 +1,4 @@
-.PHONY: help sso-dev sso-prod whoami bootstrap-dev bootstrap-prod build-layer init-dev init-prod plan-dev plan-prod deploy-dev deploy-prod
+.PHONY: help sso-dev sso-prod whoami bootstrap-dev bootstrap-prod build-layer init-dev init-prod plan-dev plan-prod deploy-dev deploy-prod sync-web-dev
 
 INFRA_DIR    = infra
 PROFILE_DEV  = jajc-dev
@@ -6,6 +6,7 @@ PROFILE_PROD = jajc-prod
 LAYER_SRC    = lambdas/layers/src
 LAYER_BUILD  = lambdas/layers/common/python
 LAYER_REQS   = lambdas/layers/requirements.txt
+APP_DIR      = app
 
 help:
 	@echo ''
@@ -31,6 +32,10 @@ help:
 	@echo '  ------------'
 	@echo '  make build-layer      Instalar dependencias y empaquetar el layer comun'
 	@echo ''
+	@echo '  Frontend'
+	@echo '  --------'
+	@echo '  make sync-web-dev     Compilar frontend y subir a S3 dev + invalidar CloudFront'
+	@echo ''
 
 # ── Auth SSO ─────────────────────────────────────────────────────────────────
 
@@ -54,7 +59,8 @@ build-layer:
 	@echo 'Construyendo layer comun...'
 	rm -rf $(LAYER_BUILD)
 	mkdir -p $(LAYER_BUILD)
-	pip3 install -r $(LAYER_REQS) -t $(LAYER_BUILD) --quiet
+	pip3 install -r $(LAYER_REQS) -t $(LAYER_BUILD) --quiet \
+		--platform manylinux2014_x86_64 --only-binary=:all: --python-version 3.12
 	cp $(LAYER_SRC)/*.py $(LAYER_BUILD)/
 	@echo 'Layer OK -> $(LAYER_BUILD)'
 
@@ -119,6 +125,28 @@ plan-prod: init-prod
 
 deploy-dev: build-layer init-dev
 	AWS_PROFILE=$(PROFILE_DEV) terraform -chdir=$(INFRA_DIR) apply -var-file=envs/dev.tfvars -auto-approve
+
+# ── Frontend web ──────────────────────────────────────────────────────────────
+
+sync-web-dev:
+	@echo 'Compilando frontend...'
+	cd $(APP_DIR) && npm ci && npm run build
+	@echo 'Sincronizando a S3 dev...'
+	@WEB_BUCKET=$$(AWS_PROFILE=$(PROFILE_DEV) terraform -chdir=$(INFRA_DIR) output -raw web_bucket_name); \
+	CF_ID=$$(AWS_PROFILE=$(PROFILE_DEV) terraform -chdir=$(INFRA_DIR) output -raw cloudfront_distribution_id); \
+	aws s3 sync $(APP_DIR)/dist/ s3://$$WEB_BUCKET --delete \
+		--exclude "index.html" \
+		--cache-control "max-age=31536000,immutable" \
+		--profile $(PROFILE_DEV); \
+	aws s3 cp $(APP_DIR)/dist/index.html s3://$$WEB_BUCKET/index.html \
+		--cache-control "no-cache,no-store,must-revalidate" \
+		--content-type "text/html" \
+		--profile $(PROFILE_DEV); \
+	aws cloudfront create-invalidation \
+		--distribution-id $$CF_ID \
+		--paths "/index.html" \
+		--profile $(PROFILE_DEV)
+	@echo 'Frontend dev OK'
 
 deploy-prod: build-layer init-prod
 	@echo ''

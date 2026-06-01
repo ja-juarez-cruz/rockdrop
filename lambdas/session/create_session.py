@@ -8,11 +8,11 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from db import sessions_table, players_table
 from auth import create_qr_token
-from models import CreateSessionRequest, ok, err
+from models import CreateSessionRequest, ok, err, make_response
 
 logger = Logger()
 
-WS_API_ID = os.environ["WS_API_ID"]
+WS_API_ID   = os.environ[\"WS_API_ID\"]
 WS_STAGE = os.environ.get("WS_STAGE", "prod")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 
@@ -22,7 +22,7 @@ def handler(event: dict, context: LambdaContext) -> dict:
     try:
         body = CreateSessionRequest.model_validate(json.loads(event.get("body", "{}")))
     except Exception as e:
-        return {"statusCode": 400, "body": json.dumps(err(str(e)))}
+        return make_response(400, err(str(e)))
 
     session_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat() + "Z"
@@ -30,7 +30,7 @@ def handler(event: dict, context: LambdaContext) -> dict:
     qr_token = create_qr_token(session_id)
 
     ws_url = f"wss://{WS_API_ID}.execute-api.{REGION}.amazonaws.com/{WS_STAGE}"
-    join_url = f"https://rockdrop.app/join?token={qr_token}"
+    join_url = f"{WEB_APP_URL}/#/join?token={qr_token}" if WEB_APP_URL else f"/#/join?token={qr_token}"
 
     sessions_table.put_item(Item={
         "session_id": session_id,
@@ -57,13 +57,9 @@ def handler(event: dict, context: LambdaContext) -> dict:
 
     logger.info("Session created", extra={"session_id": session_id})
 
-    return {
-        "statusCode": 201,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(ok({
+    return make_response(201, ok({
             "session_id": session_id,
             "qr_token": qr_token,
             "ws_url": ws_url,
             "join_url": join_url,
-        })),
-    }
+        }))
