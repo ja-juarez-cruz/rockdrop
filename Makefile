@@ -54,7 +54,7 @@ build-layer:
 	@echo 'Construyendo layer comun...'
 	rm -rf $(LAYER_BUILD)
 	mkdir -p $(LAYER_BUILD)
-	pip install -r $(LAYER_REQS) -t $(LAYER_BUILD) --quiet
+	pip3 install -r $(LAYER_REQS) -t $(LAYER_BUILD) --quiet
 	cp $(LAYER_SRC)/*.py $(LAYER_BUILD)/
 	@echo 'Layer OK -> $(LAYER_BUILD)'
 

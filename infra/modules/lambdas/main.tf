@@ -20,7 +20,7 @@ data "aws_caller_identity" "current" {}
 locals {
   region     = data.aws_region.current.name
   account_id = data.aws_caller_identity.current.account_id
-  lambdas_path = "${path.root}/../../lambdas"
+  lambdas_path = "${path.root}/../lambdas"
 
   lambda_definitions = {
     create_session   = { dir = "session", timeout = 10 }

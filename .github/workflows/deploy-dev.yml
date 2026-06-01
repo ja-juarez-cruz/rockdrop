@@ -33,7 +33,7 @@ jobs:
 
       - name: Build common layer
         run: |
-          pip install -r lambdas/layers/requirements.txt -t lambdas/layers/common/python/ --quiet
+          pip3 install -r lambdas/layers/requirements.txt -t lambdas/layers/common/python/ --quiet
           cp lambdas/layers/src/*.py lambdas/layers/common/python/
 
       # ── Infraestructura ─────────────────────────────────────────────────────
