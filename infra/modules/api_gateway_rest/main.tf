@@ -38,6 +38,13 @@ resource "aws_api_gateway_resource" "session_id" {
   path_part   = "{session_id}"
 }
 
+# /sessions/{session_id}/start
+resource "aws_api_gateway_resource" "session_start" {
+  rest_api_id = aws_api_gateway_rest_api.rockdrop.id
+  parent_id   = aws_api_gateway_resource.session_id.id
+  path_part   = "start"
+}
+
 # /sessions/{session_id}/players
 resource "aws_api_gateway_resource" "players" {
   rest_api_id = aws_api_gateway_rest_api.rockdrop.id
@@ -98,9 +105,10 @@ resource "aws_api_gateway_resource" "bracket_advance" {
 
 locals {
   integrations = {
-    create_session   = { resource = aws_api_gateway_resource.sessions.id, http_method = "POST" }
-    get_session      = { resource = aws_api_gateway_resource.session_id.id, http_method = "GET" }
-    close_session    = { resource = aws_api_gateway_resource.session_id.id, http_method = "DELETE" }
+    create_session   = { resource = aws_api_gateway_resource.sessions.id,       http_method = "POST" }
+    get_session      = { resource = aws_api_gateway_resource.session_id.id,      http_method = "GET" }
+    close_session    = { resource = aws_api_gateway_resource.session_id.id,      http_method = "DELETE" }
+    start_session    = { resource = aws_api_gateway_resource.session_start.id,   http_method = "POST" }
     join_session     = { resource = aws_api_gateway_resource.players.id, http_method = "POST" }
     get_players      = { resource = aws_api_gateway_resource.players.id, http_method = "GET" }
     submit_move      = { resource = aws_api_gateway_resource.game_move.id, http_method = "POST" }
@@ -143,6 +151,14 @@ resource "aws_lambda_permission" "apigw_invoke" {
 
 resource "aws_api_gateway_deployment" "rockdrop" {
   rest_api_id = aws_api_gateway_rest_api.rockdrop.id
+
+  # Fuerza un nuevo deployment cada vez que cambien métodos o integraciones
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_integration.integrations,
+      aws_api_gateway_integration.options,
+    ]))
+  }
 
   depends_on = [
     aws_api_gateway_integration.integrations,

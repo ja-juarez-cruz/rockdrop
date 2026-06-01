@@ -12,9 +12,10 @@ from models import CreateSessionRequest, ok, err, make_response
 
 logger = Logger()
 
-WS_API_ID   = os.environ[\"WS_API_ID\"]
+WS_API_ID   = os.environ.get("WS_API_ID")
 WS_STAGE = os.environ.get("WS_STAGE", "prod")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
+WEB_APP_URL = os.environ.get("WEB_APP_URL")
 
 
 @logger.inject_lambda_context

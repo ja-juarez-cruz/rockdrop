@@ -59,17 +59,18 @@ export class WebSocketManager {
         return
       }
 
-      const { type, ...payload } = msg
-      if (!type) {
-        console.warn('[WS] Message without type field:', msg)
+      // Backend sends {"event": "...", "payload": {...}}
+      const eventType    = msg.event || msg.type
+      const eventPayload = msg.payload ?? msg
+
+      if (!eventType) {
+        console.warn('[WS] Message without event/type field:', msg)
         return
       }
 
-      const handler = this._handlers[type]
+      const handler = this._handlers[eventType]
       if (handler) {
-        handler(payload)
-      } else {
-        // Silently ignore unknown event types — forward-compat
+        handler(eventPayload)
       }
     }
 

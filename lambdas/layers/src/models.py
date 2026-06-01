@@ -61,6 +61,7 @@ class SubmitMoveRequest(BaseModel):
     player_id: str
     move: Move
     round_number: int = Field(ge=1)
+    match_id: Optional[str] = None  # Solo en modo TOURNAMENT
 
 
 class WsEvent(BaseModel):

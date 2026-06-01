@@ -40,6 +40,8 @@ export default function FinishedPage() {
     players,
     playerId,
     bracket,
+    championId,
+    eliminatedBy,
     setSession,
     setPlayers,
     bracketUpdated,
@@ -75,16 +77,16 @@ export default function FinishedPage() {
   // ── Determine winner ────────────────────────────────────────────────────
   const isTournament = session?.mode === 'TOURNAMENT'
 
+  const champId   = championId ?? bracket?.champion_id
+  const champion  = champId ? players.find(p => p.player_id === champId) : null
+  const isChampion = champId === playerId
+  const isEliminated = !!eliminatedBy && !isChampion
+
   const sortedPlayers = [...players].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
 
-  const winner = isTournament
-    ? (bracket?.champion
-        ? players.find(p => p.player_id === bracket.champion)
-        : null)
-    : sortedPlayers[0] ?? null
-
-  const winnerName = winner?.display_name ?? 'Nadie'
-  const isMyWin    = winner?.player_id === playerId
+  const winner    = isTournament ? champion : sortedPlayers[0] ?? null
+  const winnerName = winner?.display_name ?? (isTournament ? 'Por determinar' : 'Nadie')
+  const isMyWin   = winner?.player_id === playerId
 
   // ── Loading ──────────────────────────────────────────────────────────────
   if (!session) {
@@ -97,18 +99,30 @@ export default function FinishedPage() {
 
   return (
     <main className="min-h-dvh bg-zinc-50 px-4 py-8 flex flex-col gap-6 max-w-lg mx-auto">
-      {/* Page header */}
       <div className="text-center">
         <p className="text-xs text-zinc-400 uppercase tracking-widest mb-1">
-          Partida terminada
+          {isEliminated ? 'Partido terminado' : 'Partida terminada'}
         </p>
         <h1 className="text-2xl font-extrabold text-zinc-900 tracking-tight">
-          Resultados Finales
+          {isEliminated ? '¡Hasta la próxima!' : 'Resultados Finales'}
         </h1>
       </div>
 
-      {/* Winner banner */}
-      {winner && (
+      {/* Eliminated card */}
+      {isEliminated && (
+        <Card>
+          <div className="flex flex-col items-center py-4 gap-2">
+            <span className="text-5xl" aria-hidden="true">👊</span>
+            <p className="text-lg font-bold text-zinc-900">Fuiste eliminado</p>
+            <p className="text-sm text-zinc-500">
+              <span className="font-semibold text-zinc-700">{eliminatedBy}</span> ganó el partido
+            </p>
+          </div>
+        </Card>
+      )}
+
+      {/* Winner/champion banner */}
+      {!isEliminated && winner && (
         <Card>
           <WinnerBanner name={winnerName} isMe={isMyWin} />
         </Card>

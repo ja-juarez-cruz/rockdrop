@@ -1,16 +1,3 @@
-/**
- * GamePage — /game/:sessionId
- *
- * FREE_FOR_ALL game flow:
- *  1. Show current round number
- *  2. Player selects a move via MoveSelector
- *  3. Submit move → POST /sessions/:id/game/move
- *  4. Disable selector, show "Waiting for X players"
- *  5. ROUND_RESOLVED WS event → show RoundResult overlay (3 sec)
- *  6. After overlay → clear result, ready for next round
- *  7. GAME_FINISHED → navigate to /finished/:sessionId
- */
-
 import { useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { submitMove, getSession, getPlayers } from '../lib/api.js'
@@ -22,6 +9,9 @@ import Leaderboard from '../components/game/Leaderboard.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
 import Card from '../components/ui/Card.jsx'
 import Badge from '../components/ui/Badge.jsx'
+
+const MOVE_EMOJI = { ROCK: '🪨', PAPER: '📄', SCISSORS: '✂️' }
+const MOVE_LABEL = { ROCK: 'Piedra', PAPER: 'Papel', SCISSORS: 'Tijeras' }
 
 export default function GamePage() {
   const { sessionId } = useParams()
@@ -35,6 +25,7 @@ export default function GamePage() {
     currentRound,
     myMove,
     waitingFor,
+    submittedPlayers,
     lastRoundResult,
     setSession,
     setPlayers,
@@ -42,55 +33,35 @@ export default function GamePage() {
     clearRoundResult,
   } = useGameStore()
 
-  const { status: wsStatus } = useWebSocket(wsUrl, sessionId, playerId)
+  useWebSocket(wsUrl, sessionId, playerId)
 
-  // ── Load session on mount if not already loaded ─────────────────────────
+  // ── Load on mount ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!session || session.session_id !== sessionId) {
       Promise.all([getSession(sessionId), getPlayers(sessionId)])
-        .then(([s, p]) => {
-          setSession(s)
-          setPlayers(p.players ?? p)
-        })
+        .then(([s, p]) => { setSession(s); setPlayers(p.players ?? p) })
         .catch(console.error)
     }
   }, [sessionId])
 
-  // ── Watch for GAME_FINISHED ─────────────────────────────────────────────
+  // ── GAME_FINISHED → navigate ─────────────────────────────────────────────
   useEffect(() => {
-    if (session?.status === 'FINISHED') {
+    if (session?.status === 'FINISHED')
       navigate(`/finished/${sessionId}`, { replace: true })
-    }
-  }, [session?.status, sessionId, navigate])
+  }, [session?.status])
 
   // ── Submit move ──────────────────────────────────────────────────────────
-  const handleSelectMove = useCallback(
-    async (move) => {
-      if (myMove) return // already submitted
+  const handleSelectMove = useCallback(async (move) => {
+    if (myMove) return
+    setMyMove(move)
+    try {
+      await submitMove(sessionId, { player_id: playerId, move, round_number: currentRound })
+    } catch {
+      setMyMove(null)
+    }
+  }, [myMove, currentRound, playerId, sessionId, setMyMove])
 
-      setMyMove(move)
-
-      try {
-        await submitMove(sessionId, {
-          player_id:    playerId,
-          move,
-          round_number: currentRound,
-        })
-      } catch (err) {
-        // Revert optimistic selection on error
-        setMyMove(null)
-        console.error('[Game] Move submit error:', err)
-      }
-    },
-    [myMove, currentRound, playerId, sessionId, setMyMove],
-  )
-
-  // ── Dismiss round result overlay ────────────────────────────────────────
-  const handleDismissResult = useCallback(() => {
-    clearRoundResult()
-  }, [clearRoundResult])
-
-  // ── Render ─────────────────────────────────────────────────────────────
+  // ── Loading ──────────────────────────────────────────────────────────────
   if (!session) {
     return (
       <div className="min-h-dvh flex items-center justify-center">
@@ -99,75 +70,121 @@ export default function GamePage() {
     )
   }
 
-  const hasSubmitted  = !!myMove
-  const roundDisplay  = currentRound || session.current_round || 1
+  const hasSubmitted   = !!myMove
+  const connectedCount = players.filter(p => p.status === 'CONNECTED').length
 
   return (
-    <main className="min-h-dvh bg-zinc-50 px-4 py-8 flex flex-col gap-6 max-w-lg mx-auto">
+    <main className="min-h-dvh bg-zinc-50 px-4 py-6 flex flex-col gap-5 max-w-lg mx-auto">
+
       {/* Round result overlay */}
       {lastRoundResult && (
         <RoundResult
           result={lastRoundResult}
           playerId={playerId}
           players={players}
-          onDismiss={handleDismissResult}
+          onDismiss={clearRoundResult}
         />
       )}
 
-      {/* Header */}
+      {/* ── Header ─────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs text-zinc-400 uppercase tracking-wider mb-0.5">
             Todos contra Todos
           </p>
-          <h1 className="text-xl font-extrabold text-zinc-900 tracking-tight">
-            Ronda {roundDisplay}
+          <h1 className="text-2xl font-extrabold text-zinc-900 tracking-tight">
+            Ronda {currentRound}
           </h1>
         </div>
-        <Badge variant={wsStatus === 'connected' ? 'connected' : 'waiting'}>
-          <span
-            aria-hidden="true"
-            className={[
-              'w-1.5 h-1.5 rounded-full',
-              wsStatus === 'connected' ? 'bg-green-500' : 'bg-zinc-300',
-            ].join(' ')}
-          />
-          {wsStatus === 'connected' ? 'En vivo' : 'Reconectando…'}
-        </Badge>
+        <span className="text-xs text-zinc-400 tabular-nums">
+          {connectedCount} jugadores
+        </span>
       </div>
 
-      {/* Move selector */}
+      {/* ── Tu jugada ──────────────────────────────────────────────────── */}
       <Card>
-        <h2 className="text-sm font-semibold text-zinc-900 mb-4">
-          {hasSubmitted ? 'Jugada enviada' : 'Elige tu jugada'}
-        </h2>
-
-        <MoveSelector
-          onSelect={handleSelectMove}
-          selected={myMove}
-          disabled={hasSubmitted}
-        />
-
-        {/* Waiting message after submitting */}
-        {hasSubmitted && (
-          <div className="mt-4 flex items-center gap-2 text-sm text-zinc-500">
-            <Spinner size="sm" className="text-blue-500 shrink-0" />
-            <span>
-              {waitingFor > 0
-                ? `Esperando ${waitingFor} jugador${waitingFor !== 1 ? 'es' : ''}…`
-                : 'Esperando a los demás…'}
+        {!hasSubmitted ? (
+          <>
+            <p className="text-sm font-semibold text-zinc-900 mb-1">Elige tu jugada</p>
+            <p className="text-xs text-zinc-400 mb-4">Todos juegan al mismo tiempo</p>
+            <MoveSelector onSelect={handleSelectMove} selected={myMove} disabled={false} />
+          </>
+        ) : (
+          <div className="flex items-center gap-4">
+            <span className="text-5xl" aria-hidden="true">{MOVE_EMOJI[myMove]}</span>
+            <div>
+              <p className="text-xs text-zinc-400 mb-0.5">Tu jugada</p>
+              <p className="text-lg font-bold text-zinc-900">{MOVE_LABEL[myMove]}</p>
+              <p className="text-xs text-zinc-400 mt-1">Esperando a los demás…</p>
+            </div>
+            <span className="ml-auto">
+              <Badge variant="connected">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500" aria-hidden="true" />
+                Enviada
+              </Badge>
             </span>
           </div>
         )}
       </Card>
 
-      {/* Leaderboard */}
+      {/* ── Estado de jugadores ────────────────────────────────────────── */}
+      <Card padding="sm">
+        <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider px-1 mb-3">
+          Jugadores · ronda {currentRound}
+        </p>
+        <div className="flex flex-col gap-1">
+          {players
+            .filter(p => p.status === 'CONNECTED')
+            .map((player) => {
+              const isMe        = player.player_id === playerId
+              const hasThrown   = isMe
+                ? hasSubmitted
+                : submittedPlayers.includes(player.player_id)
+
+              return (
+                <div
+                  key={player.player_id}
+                  className="flex items-center justify-between px-2 py-2 rounded-xl"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${
+                        hasThrown ? 'bg-green-500' : 'bg-zinc-300'
+                      }`}
+                      aria-hidden="true"
+                    />
+                    <span className={`text-sm font-medium ${isMe ? 'text-blue-700' : 'text-zinc-900'}`}>
+                      {player.display_name}
+                      {isMe && <span className="ml-1 text-xs font-normal text-blue-400">(Tú)</span>}
+                    </span>
+                  </div>
+                  <span className={`text-xs font-medium ${hasThrown ? 'text-green-600' : 'text-zinc-400'}`}>
+                    {hasThrown ? '✓ Listo' : '⏳ Pendiente'}
+                  </span>
+                </div>
+              )
+            })}
+        </div>
+
+        {/* Resumen de espera */}
+        {hasSubmitted && waitingFor > 0 && (
+          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-zinc-100 px-1">
+            <Spinner size="sm" className="text-blue-400 shrink-0" />
+            <p className="text-xs text-zinc-500">
+              Esperando {waitingFor} jugador{waitingFor !== 1 ? 'es' : ''}…
+            </p>
+          </div>
+        )}
+      </Card>
+
+      {/* ── Clasificación ─────────────────────────────────────────────── */}
       <div>
-        <h2 className="text-sm font-semibold text-zinc-700 mb-3">
+        <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
           Clasificación
-        </h2>
+        </p>
         <Leaderboard players={players} playerId={playerId} />
       </div>
+
     </main>
   )
 }

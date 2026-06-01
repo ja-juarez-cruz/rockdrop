@@ -1,11 +1,11 @@
 # ── S3 bucket (privado) + CloudFront ─────────────────────────────────────────
-# El bucket es privado; solo CloudFront accede via OAC.
-# URL resultante: https://{id}.cloudfront.net
-# Sin dominio custom por ahora — añadir domain.tf cuando se tenga el dominio.
+# El bucket es privado; solo CloudFront puede leerlo via OAC.
+# URL pública del frontend: https://{id}.cloudfront.net  (output web_app_url)
+
+# ── Bucket ────────────────────────────────────────────────────────────────────
 
 resource "aws_s3_bucket" "web_app" {
   bucket = var.web_bucket_name
-
   lifecycle { prevent_destroy = true }
 }
 
@@ -84,7 +84,7 @@ resource "aws_cloudfront_distribution" "web_app" {
     max_ttl     = 31536000
   }
 
-  # SPA routing: S3 devuelve 403/404 para rutas que no son archivos → redirigir a index.html
+  # SPA con hash routing: S3 devuelve 403/404 para paths desconocidos → index.html
   custom_error_response {
     error_code         = 403
     response_code      = 200

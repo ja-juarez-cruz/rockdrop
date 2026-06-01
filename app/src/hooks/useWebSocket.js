@@ -24,6 +24,9 @@ export function useWebSocket(wsUrl, sessionId, playerId) {
     moveSubmitted,
     roundResolved,
     bracketUpdated,
+    matchFinished,
+    tournamentRoundComplete,
+    championDeclared,
     gameFinished,
     setSession,
   } = useGameStore()
@@ -53,6 +56,15 @@ export function useWebSocket(wsUrl, sessionId, playerId) {
       },
       BRACKET_UPDATED(payload) {
         bracketUpdated(payload)
+      },
+      MATCH_FINISHED(payload) {
+        matchFinished(payload)
+      },
+      TOURNAMENT_ROUND_COMPLETE(payload) {
+        tournamentRoundComplete(payload)
+      },
+      CHAMPION_DECLARED(payload) {
+        championDeclared(payload)
       },
       GAME_FINISHED(payload) {
         gameFinished(payload)

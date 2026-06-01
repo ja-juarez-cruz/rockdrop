@@ -31,6 +31,7 @@ locals {
     create_session   = { dir = "session", timeout = 10 }
     get_session      = { dir = "session", timeout = 10 }
     close_session    = { dir = "session", timeout = 10 }
+    start_session    = { dir = "session", timeout = 10 }
     join_session     = { dir = "player", timeout = 10 }
     get_players      = { dir = "player", timeout = 10 }
     submit_move      = { dir = "game", timeout = 10 }

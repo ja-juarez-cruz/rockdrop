@@ -8,9 +8,9 @@
  * - Navigates to /game or /tournament when session.status → PLAYING
  */
 
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getSession, getPlayers } from '../lib/api.js'
+import { getSession, getPlayers, startSession } from '../lib/api.js'
 import useGameStore from '../stores/gameStore.js'
 import { useWebSocket } from '../hooks/useWebSocket.js'
 import PlayerList from '../components/game/PlayerList.jsx'
@@ -18,6 +18,7 @@ import QRDisplay from '../components/lobby/QRDisplay.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
 import Card from '../components/ui/Card.jsx'
 import Badge from '../components/ui/Badge.jsx'
+import Button from '../components/ui/Button.jsx'
 
 const POLL_INTERVAL_MS = 3000
 
@@ -47,7 +48,9 @@ export default function LobbyPage() {
 
   const { status: wsStatus } = useWebSocket(wsUrl, sessionId, playerId)
 
-  const pollRef = useRef(null)
+  const pollRef                       = useRef(null)
+  const [starting, setStarting]       = useState(false)
+  const [startError, setStartError]   = useState('')
 
   // ── Load session and players ────────────────────────────────────────────
   const loadData = useCallback(async () => {
@@ -103,6 +106,19 @@ export default function LobbyPage() {
       navigate(`/finished/${sessionId}`, { replace: true })
     }
   }, [session?.status, session?.mode, sessionId, navigate])
+
+  // ── Start game (host only, FREE_FOR_ALL) ───────────────────────────────
+  async function handleStart() {
+    setStarting(true)
+    setStartError('')
+    try {
+      await startSession(sessionId, playerId)
+      // Navigation happens automatically when session.status → PLAYING
+    } catch (e) {
+      setStartError(e.message || 'No se pudo iniciar la partida.')
+      setStarting(false)
+    }
+  }
 
   // ── Build join URL for QR display ──────────────────────────────────────
   const joinUrl = session?.join_url
@@ -162,25 +178,50 @@ export default function LobbyPage() {
         </Card>
       )}
 
-      {/* Waiting state message */}
-      <Card padding="sm">
-        <div className="flex items-center gap-3 py-1">
-          <Spinner size="sm" className="text-blue-500 shrink-0" />
-          <div>
-            <p className="text-sm font-medium text-zinc-900">
-              {isHost
-                ? 'Esperando jugadores…'
-                : 'Esperando que el anfitrión inicie el juego…'}
+      {/* Waiting state / Start button */}
+      {isHost ? (
+        <Card>
+          <p className="text-xs text-zinc-500 mb-1">
+            {session.mode === 'TOURNAMENT' ? 'Modo Torneo' : 'Modo Todos contra Todos'}
+            {maxPlayers > 0 ? ` · Máx. ${maxPlayers} jugadores` : ''}
+          </p>
+          <p className="text-sm text-zinc-700 mb-4">
+            {session.mode === 'TOURNAMENT'
+              ? 'Cuando todos estén listos, inicia el torneo para generar el bracket.'
+              : 'Cuando todos estén listos, inicia la partida.'}
+          </p>
+          {startError && (
+            <p role="alert" className="text-xs text-red-500 mb-3">{startError}</p>
+          )}
+          <Button
+            fullWidth
+            loading={starting}
+            disabled={playerCount < 2}
+            onClick={handleStart}
+          >
+            {starting ? 'Iniciando…' : 'Iniciar partida'}
+          </Button>
+          {playerCount < 2 && (
+            <p className="text-xs text-zinc-400 text-center mt-2">
+              Mínimo 2 jugadores para iniciar
             </p>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              {session.mode === 'TOURNAMENT'
-                ? 'Modo Torneo'
-                : 'Modo Todos contra Todos'}
-              {maxPlayers > 0 ? ` · Máx. ${maxPlayers} jugadores` : ''}
-            </p>
+          )}
+        </Card>
+      ) : (
+        <Card padding="sm">
+          <div className="flex items-center gap-3 py-1">
+            <Spinner size="sm" className="text-blue-500 shrink-0" />
+            <div>
+              <p className="text-sm font-medium text-zinc-900">
+                Esperando que el anfitrión inicie el juego…
+              </p>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                {session.mode === 'TOURNAMENT' ? 'Modo Torneo' : 'Modo Todos contra Todos'}
+              </p>
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      )}
 
       {/* Player list */}
       <div>

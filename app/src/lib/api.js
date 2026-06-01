@@ -56,6 +56,10 @@ export function createSession(body) {
   return request('POST', '/sessions', body)
 }
 
+export function startSession(sessionId, hostPlayerId) {
+  return request('POST', `/sessions/${sessionId}/start`, { host_player_id: hostPlayerId })
+}
+
 /**
  * Join an existing session as a player (guest via QR token).
  * @param {string} sessionId

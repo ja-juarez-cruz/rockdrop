@@ -6,6 +6,7 @@ locals {
   cors_resources = {
     sessions        = aws_api_gateway_resource.sessions.id
     session_id      = aws_api_gateway_resource.session_id.id
+    session_start   = aws_api_gateway_resource.session_start.id
     players         = aws_api_gateway_resource.players.id
     game_move       = aws_api_gateway_resource.game_move.id
     game_round_id   = aws_api_gateway_resource.game_round_id.id

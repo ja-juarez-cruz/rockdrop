@@ -1,5 +1,15 @@
 import { create } from 'zustand'
 
+function _findMyMatch(bracket, playerId) {
+  if (!bracket?.matches || !playerId) return null
+  const tr = bracket.current_tournament_round ?? 1
+  return bracket.matches.find(m =>
+    m.tournament_round === tr &&
+    m.status === 'ACTIVE' &&
+    (m.player1_id === playerId || m.player2_id === playerId)
+  ) ?? null
+}
+
 /**
  * Single Zustand store for all RockDrop game state.
  *
@@ -24,13 +34,17 @@ const useGameStore = create((set, get) => ({
   players: [],
 
   // ── Game ──────────────────────────────────────────────────────────────────
-  currentRound: 0,
+  currentRound: 1,
   myMove: null,
   waitingFor: 0,
+  submittedPlayers: [],   // player_ids que ya tiraron esta ronda
   lastRoundResult: null,
 
   // ── Tournament ────────────────────────────────────────────────────────────
-  bracket: null,
+  bracket:          null,
+  myMatch:          null,   // match actual del jugador
+  eliminatedBy:     null,   // display_name del jugador que eliminó
+  championId:       null,
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
   wsStatus: 'disconnected',
@@ -132,7 +146,12 @@ const useGameStore = create((set, get) => ({
    * @param {{ player_id, round_number, submitted_count, waiting_for }} payload
    */
   moveSubmitted(payload) {
-    set({ waitingFor: payload.waiting_for })
+    set((state) => ({
+      waitingFor: payload.waiting_for,
+      submittedPlayers: payload.player_id
+        ? [...new Set([...state.submittedPlayers, payload.player_id])]
+        : state.submittedPlayers,
+    }))
   },
 
   /**
@@ -140,19 +159,42 @@ const useGameStore = create((set, get) => ({
    * @param {{ round_number, winner_id, is_tie, results, leaderboard }} payload
    */
   roundResolved(payload) {
-    // Merge leaderboard scores into players list
-    const leaderboard = payload.leaderboard ?? []
+    const results    = payload.results ?? {}
+    const matchScore = payload.match_score ?? null
+
     set((state) => {
+      // Update player scores (FFA mode)
       const updatedPlayers = state.players.map(p => {
-        const entry = leaderboard.find(e => e.player_id === p.player_id)
-        return entry ? { ...p, score: entry.score } : p
+        const r = results[p.player_id]
+        if (!r || payload.match_id) return p  // tournament scores handled by matchFinished
+        return r.outcome === 'WIN' ? { ...p, score: (p.score ?? 0) + 1 } : p
       })
+
+      // Update match win counts in bracket for tournament
+      let bracket = state.bracket
+      if (matchScore && bracket) {
+        bracket = {
+          ...bracket,
+          matches: bracket.matches.map(m => {
+            if (m.match_id !== payload.match_id) return m
+            return {
+              ...m,
+              player1_wins: matchScore[m.player1_id] ?? m.player1_wins,
+              player2_wins: matchScore[m.player2_id] ?? m.player2_wins,
+              current_match_round: payload.round_number + 1,
+            }
+          }),
+        }
+      }
+
       return {
-        lastRoundResult: payload,
-        currentRound:    payload.round_number + 1,
-        myMove:          null,
-        waitingFor:      0,
-        players:         updatedPlayers,
+        lastRoundResult:  payload,
+        currentRound:     payload.round_number + 1,
+        myMove:           null,
+        waitingFor:       0,
+        submittedPlayers: [],
+        players:          updatedPlayers,
+        bracket,
       }
     })
   },
@@ -169,9 +211,56 @@ const useGameStore = create((set, get) => ({
    * @param {{ bracket }} payload
    */
   bracketUpdated(payload) {
-    set((state) => ({
-      bracket: { ...(state.bracket ?? {}), ...payload.bracket },
-    }))
+    const b = payload.bracket ?? payload
+    set((state) => {
+      const merged = { ...(state.bracket ?? {}), ...b }
+      const myMatch = _findMyMatch(merged, state.playerId)
+      return { bracket: merged, myMatch }
+    })
+  },
+
+  matchFinished(payload) {
+    const { winner_id, loser_id, winner_name, loser_name, match_id } = payload
+    set((state) => {
+      const isLoser   = state.playerId === loser_id
+      const bracket   = state.bracket
+        ? {
+            ...state.bracket,
+            matches: state.bracket.matches.map(m =>
+              m.match_id === match_id
+                ? { ...m, status: 'COMPLETE', winner_id }
+                : m
+            ),
+          }
+        : state.bracket
+
+      return {
+        bracket,
+        myMatch:      null,
+        eliminatedBy: isLoser ? winner_name : state.eliminatedBy,
+        currentRound: 1,
+        myMove:       null,
+        submittedPlayers: [],
+      }
+    })
+  },
+
+  tournamentRoundComplete(payload) {
+    set((state) => {
+      const b = payload.bracket ?? state.bracket
+      const myMatch = _findMyMatch(b, state.playerId)
+      return {
+        bracket:      b,
+        myMatch,
+        currentRound: 1,
+        myMove:       null,
+        submittedPlayers: [],
+      }
+    })
+  },
+
+  championDeclared(payload) {
+    set({ championId: payload.champion_id })
   },
 
   /**
@@ -199,19 +288,20 @@ const useGameStore = create((set, get) => ({
    */
   reset() {
     set({
-      sessionId:       null,
-      session:         null,
-      playerId:        null,
-      isHost:          false,
-      qrToken:         null,
-      wsUrl:           null,
-      players:         [],
-      currentRound:    0,
-      myMove:          null,
-      waitingFor:      0,
-      lastRoundResult: null,
-      bracket:         null,
-      wsStatus:        'disconnected',
+      sessionId:        null,
+      session:          null,
+      playerId:         null,
+      isHost:           false,
+      qrToken:          null,
+      wsUrl:            null,
+      players:          [],
+      currentRound:     1,
+      myMove:           null,
+      waitingFor:       0,
+      submittedPlayers: [],
+      lastRoundResult:  null,
+      bracket:          null,
+      wsStatus:         'disconnected',
     })
   },
 }))

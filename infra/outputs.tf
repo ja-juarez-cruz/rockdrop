@@ -14,7 +14,7 @@ output "dynamodb_table_names" {
 }
 
 output "web_app_url" {
-  description = "URL del frontend (CloudFront). Copiar a dev.tfvars/prod.tfvars como web_app_url."
+  description = "URL pública del frontend (CloudFront HTTPS). Copiar a web_app_url en dev.tfvars/prod.tfvars."
   value       = "https://${aws_cloudfront_distribution.web_app.domain_name}"
 }
 
