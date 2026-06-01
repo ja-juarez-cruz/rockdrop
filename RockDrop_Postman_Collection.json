@@ -1,0 +1,703 @@
+{
+  "info": {
+    "name": "RockDrop API",
+    "description": "API completa para el juego multijugador Piedra Papel Tijera sin instalación.\n\n**Variables de entorno requeridas:**\n- `base_url`: https://{api-id}.execute-api.us-east-1.amazonaws.com/prod\n- `ws_url`: wss://{ws-api-id}.execute-api.us-east-1.amazonaws.com/prod\n- `session_id`: se llena automáticamente al crear sesión\n- `qr_token`: se llena automáticamente al crear sesión\n- `host_player_id`: UUID del host\n- `guest_player_id`: UUID del guest (se llena al hacer join)\n- `host_token`: API Key del host app",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "rockdrop-api-collection-v1"
+  },
+  "variable": [
+    { "key": "base_url", "value": "https://REPLACE_WITH_API_ID.execute-api.us-east-1.amazonaws.com/prod", "type": "string" },
+    { "key": "ws_url", "value": "wss://REPLACE_WITH_WS_API_ID.execute-api.us-east-1.amazonaws.com/prod", "type": "string" },
+    { "key": "session_id", "value": "", "type": "string" },
+    { "key": "qr_token", "value": "", "type": "string" },
+    { "key": "host_player_id", "value": "host-uuid-replace-me", "type": "string" },
+    { "key": "guest_player_id", "value": "", "type": "string" },
+    { "key": "host_token", "value": "REPLACE_WITH_HOST_API_KEY", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "🎮 Sessions",
+      "description": "Gestión del ciclo de vida de una sesión de juego. Solo el Host puede crear y cerrar sesiones.",
+      "item": [
+        {
+          "name": "Create Session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('session_id', res.data.session_id);",
+                  "  pm.collectionVariables.set('qr_token', res.data.qr_token);",
+                  "  pm.test('Session created', () => pm.response.to.have.status(201));",
+                  "  pm.test('Has session_id', () => pm.expect(res.data.session_id).to.be.a('string'));",
+                  "  pm.test('Has qr_token JWT', () => pm.expect(res.data.qr_token).to.include('.'));",
+                  "  pm.test('Has ws_url', () => pm.expect(res.data.ws_url).to.include('wss://'));",
+                  "  console.log('✅ Session ID:', res.data.session_id);",
+                  "  console.log('🔗 Join URL:', res.data.join_url);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-host-token", "value": "{{host_token}}", "description": "API Key del host (app nativa)" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"host_player_id\": \"{{host_player_id}}\",\n  \"display_name\": \"Jose (Host)\",\n  \"mode\": \"FREE_FOR_ALL\",\n  \"max_players\": 30\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions",
+              "host": ["{{base_url}}"],
+              "path": ["sessions"]
+            },
+            "description": "**Host crea una nueva sesión de juego.**\n\nRetorna:\n- `session_id`: ID único de la sesión\n- `qr_token`: JWT para generar el QR code\n- `join_url`: URL completa para compartir con guests\n- `ws_url`: URL del WebSocket para conectarse\n\n**Modos disponibles:**\n- `FREE_FOR_ALL`: Todos juegan contra todos, gana quien acumula más puntos\n- `TOURNAMENT`: Bracket eliminatorio 1v1"
+          },
+          "response": [
+            {
+              "name": "201 - Session Created",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"data\": {\n    \"session_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n    \"qr_token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzZXNzaW9uX2lkIjoiYTFiMmMzZDQiLCJleHAiOjE3MDAwMDAwMDB9.signature\",\n    \"join_url\": \"https://rockdrop.app/join?token=eyJhbGci...\",\n    \"ws_url\": \"wss://ws-api-id.execute-api.us-east-1.amazonaws.com/prod\",\n    \"mode\": \"FREE_FOR_ALL\",\n    \"max_players\": 30,\n    \"status\": \"WAITING\"\n  },\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Has status field', () => pm.expect(res.data.status).to.be.oneOf(['WAITING', 'PLAYING', 'FINISHED']));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}"]
+            },
+            "description": "Obtiene el estado actual de la sesión. Disponible para Host y Guests.\n\n**Status posibles:**\n- `WAITING`: Esperando jugadores\n- `PLAYING`: Juego en curso\n- `FINISHED`: Sesión terminada"
+          },
+          "response": [
+            {
+              "name": "200 - Session State",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"session_id\": \"a1b2c3d4\",\n    \"status\": \"WAITING\",\n    \"mode\": \"FREE_FOR_ALL\",\n    \"current_round\": 0,\n    \"player_count\": 5,\n    \"max_players\": 30,\n    \"host_player_id\": \"host-uuid\",\n    \"created_at\": \"2026-06-01T18:00:00Z\"\n  },\n  \"error\": null\n}"
+            },
+            {
+              "name": "404 - Session Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "body": "{\n  \"data\": null,\n  \"error\": \"Session not found or expired\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Close Session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Session closed', () => pm.expect(res.data.status).to.equal('FINISHED'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "x-host-token", "value": "{{host_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}"]
+            },
+            "description": "**Solo el Host puede cerrar una sesión.** Envía broadcast WS `GAME_FINISHED` a todos los jugadores conectados y pone status=FINISHED."
+          },
+          "response": [
+            {
+              "name": "200 - Session Closed",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"session_id\": \"a1b2c3d4\",\n    \"status\": \"FINISHED\",\n    \"final_scores\": [\n      { \"player_id\": \"uuid1\", \"display_name\": \"Jose\", \"score\": 3 },\n      { \"player_id\": \"uuid2\", \"display_name\": \"Maria\", \"score\": 2 }\n    ]\n  },\n  \"error\": null\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "👥 Players",
+      "description": "Gestión de jugadores dentro de una sesión. Los guests usan el QR token para autenticarse.",
+      "item": [
+        {
+          "name": "Join Session (Guest)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('guest_player_id', res.data.player_id);",
+                  "  pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "  pm.test('Has player_id', () => pm.expect(res.data.player_id).to.be.a('string'));",
+                  "  pm.test('Has ws_url', () => pm.expect(res.data.ws_url).to.include('wss://'));",
+                  "  console.log('✅ Guest Player ID:', res.data.player_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"display_name\": \"Maria\",\n  \"token\": \"{{qr_token}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/players",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "players"]
+            },
+            "description": "**Guest se une a una sesión sin necesidad de app.**\n\nEl `token` es el JWT del QR code. Expira en 1 hora desde que el Host creó la sesión.\n\nRetorna el `player_id` del guest y la URL WebSocket para conectarse en tiempo real."
+          },
+          "response": [
+            {
+              "name": "201 - Player Joined",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"data\": {\n    \"player_id\": \"guest-uuid-xyz\",\n    \"session_id\": \"a1b2c3d4\",\n    \"display_name\": \"Maria\",\n    \"ws_url\": \"wss://ws-api-id.execute-api.us-east-1.amazonaws.com/prod?session_id=a1b2c3d4&player_id=guest-uuid-xyz\"\n  },\n  \"error\": null\n}"
+            },
+            {
+              "name": "401 - Invalid Token",
+              "status": "Unauthorized",
+              "code": 401,
+              "body": "{\n  \"data\": null,\n  \"error\": \"Token invalid or expired\"\n}"
+            },
+            {
+              "name": "409 - Session Full",
+              "status": "Conflict",
+              "code": 409,
+              "body": "{\n  \"data\": null,\n  \"error\": \"Session is full (max_players reached)\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Players",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Players is array', () => pm.expect(res.data.players).to.be.an('array'));",
+                  "console.log('👥 Players connected:', res.data.players.length);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/players",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "players"]
+            },
+            "description": "Lista todos los jugadores actualmente en la sesión con sus status de conexión y scores."
+          },
+          "response": [
+            {
+              "name": "200 - Players List",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"players\": [\n      {\n        \"player_id\": \"host-uuid\",\n        \"display_name\": \"Jose (Host)\",\n        \"is_host\": true,\n        \"status\": \"CONNECTED\",\n        \"score\": 2\n      },\n      {\n        \"player_id\": \"guest-uuid-xyz\",\n        \"display_name\": \"Maria\",\n        \"is_host\": false,\n        \"status\": \"CONNECTED\",\n        \"score\": 1\n      }\n    ],\n    \"total\": 2\n  },\n  \"error\": null\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🎯 Game",
+      "description": "Flujo principal del juego: enviar movimientos y consultar resultados de cada ronda.",
+      "item": [
+        {
+          "name": "Submit Move",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Move accepted', () => pm.expect(res.data.accepted).to.be.true);",
+                  "console.log('⏳ Waiting for:', res.data.waiting_for, 'players');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"player_id\": \"{{guest_player_id}}\",\n  \"move\": \"ROCK\",\n  \"round_number\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/game/move",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "game", "move"]
+            },
+            "description": "**Jugador envía su movimiento para la ronda actual.**\n\n`move` debe ser uno de: `ROCK`, `PAPER`, `SCISSORS`\n\nCuando **todos los jugadores** hayan enviado su movimiento, se dispara automáticamente la resolución via EventBridge y se hace broadcast del resultado por WebSocket.\n\n**Idempotente:** si el mismo jugador envía dos veces en la misma ronda, retorna el movimiento ya registrado sin error."
+          },
+          "response": [
+            {
+              "name": "200 - Move Accepted",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"accepted\": true,\n    \"round_number\": 1,\n    \"waiting_for\": 3,\n    \"message\": \"Move registered. Waiting for 3 more players.\"\n  },\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 - Last Move (triggers resolve)",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"accepted\": true,\n    \"round_number\": 1,\n    \"waiting_for\": 0,\n    \"message\": \"All players submitted. Resolving round...\"\n  },\n  \"error\": null\n}"
+            },
+            {
+              "name": "400 - Invalid Move",
+              "status": "Bad Request",
+              "code": 400,
+              "body": "{\n  \"data\": null,\n  \"error\": \"Invalid move. Must be ROCK, PAPER, or SCISSORS\"\n}"
+            },
+            {
+              "name": "409 - Duplicate Move",
+              "status": "Conflict",
+              "code": 409,
+              "body": "{\n  \"data\": null,\n  \"error\": \"Player already submitted a move for this round\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Submit Move — Host (ROCK)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"player_id\": \"{{host_player_id}}\",\n  \"move\": \"ROCK\",\n  \"round_number\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/game/move",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "game", "move"]
+            },
+            "description": "Variant preconfigurada para el Host. Útil para testing rápido."
+          }
+        },
+        {
+          "name": "Submit Move — Host (SCISSORS)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"player_id\": \"{{host_player_id}}\",\n  \"move\": \"SCISSORS\",\n  \"round_number\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/game/move",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "game", "move"]
+            }
+          }
+        },
+        {
+          "name": "Submit Move — Host (PAPER)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"player_id\": \"{{host_player_id}}\",\n  \"move\": \"PAPER\",\n  \"round_number\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/game/move",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "game", "move"]
+            }
+          }
+        },
+        {
+          "name": "Get Round Result",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Has results', () => pm.expect(res.data.results).to.be.an('object'));",
+                  "console.log('🏆 Winner:', res.data.winner_id || 'TIE');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/game/round/1",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "game", "round", "1"]
+            },
+            "description": "Obtiene el resultado de una ronda específica.\n\nPuede llamarse con cualquier número de ronda del historial.\n\nCada entry en `results` contiene:\n- `move`: el movimiento enviado\n- `outcome`: WIN | LOSE | TIE"
+          },
+          "response": [
+            {
+              "name": "200 - Round Result",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"round_number\": 1,\n    \"winner_id\": \"host-uuid\",\n    \"results\": {\n      \"host-uuid\": { \"move\": \"ROCK\", \"outcome\": \"WIN\", \"display_name\": \"Jose\" },\n      \"guest-uuid-xyz\": { \"move\": \"SCISSORS\", \"outcome\": \"LOSE\", \"display_name\": \"Maria\" }\n    },\n    \"resolved_at\": \"2026-06-01T18:05:32Z\"\n  },\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 - TIE Result",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"round_number\": 2,\n    \"winner_id\": null,\n    \"is_tie\": true,\n    \"results\": {\n      \"host-uuid\": { \"move\": \"ROCK\", \"outcome\": \"TIE\", \"display_name\": \"Jose\" },\n      \"guest-uuid-xyz\": { \"move\": \"ROCK\", \"outcome\": \"TIE\", \"display_name\": \"Maria\" }\n    },\n    \"resolved_at\": \"2026-06-01T18:06:10Z\"\n  },\n  \"error\": null\n}"
+            },
+            {
+              "name": "404 - Round Not Resolved Yet",
+              "status": "Not Found",
+              "code": 404,
+              "body": "{\n  \"data\": null,\n  \"error\": \"Round not yet resolved\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🏆 Tournament",
+      "description": "Modo torneo con bracket eliminatorio. El Host genera el bracket y controla el avance de rondas.",
+      "item": [
+        {
+          "name": "Generate Bracket",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const res = pm.response.json();",
+                  "pm.test('Has matches', () => pm.expect(res.data.matches).to.be.an('array'));",
+                  "console.log('🎯 Matches generated:', res.data.matches.length);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-host-token", "value": "{{host_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"host_player_id\": \"{{host_player_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/tournament/bracket",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "tournament", "bracket"]
+            },
+            "description": "**Solo Host.** Genera el bracket de torneo con los jugadores actuales.\n\nEl algoritmo:\n1. Shuffle aleatorio de jugadores\n2. Si el número no es potencia de 2, asigna byes automáticamente\n3. Crea matches pareados\n4. Broadcast WS `BRACKET_UPDATED` a todos los jugadores"
+          },
+          "response": [
+            {
+              "name": "201 - Bracket Generated (4 players)",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"data\": {\n    \"bracket_id\": \"bracket-uuid\",\n    \"total_rounds\": 2,\n    \"current_round\": 1,\n    \"matches\": [\n      {\n        \"match_id\": \"m1\",\n        \"round\": 1,\n        \"player_a\": { \"player_id\": \"uuid1\", \"display_name\": \"Jose\" },\n        \"player_b\": { \"player_id\": \"uuid2\", \"display_name\": \"Maria\" },\n        \"status\": \"PENDING\"\n      },\n      {\n        \"match_id\": \"m2\",\n        \"round\": 1,\n        \"player_a\": { \"player_id\": \"uuid3\", \"display_name\": \"Carlos\" },\n        \"player_b\": { \"player_id\": \"uuid4\", \"display_name\": \"Ana\" },\n        \"status\": \"PENDING\"\n      }\n    ]\n  },\n  \"error\": null\n}"
+            },
+            {
+              "name": "201 - Bracket with Bye (3 players)",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"data\": {\n    \"bracket_id\": \"bracket-uuid\",\n    \"total_rounds\": 2,\n    \"current_round\": 1,\n    \"matches\": [\n      {\n        \"match_id\": \"m1\",\n        \"round\": 1,\n        \"player_a\": { \"player_id\": \"uuid1\", \"display_name\": \"Jose\" },\n        \"player_b\": { \"player_id\": \"uuid2\", \"display_name\": \"Maria\" },\n        \"status\": \"PENDING\"\n      },\n      {\n        \"match_id\": \"m2\",\n        \"round\": 1,\n        \"player_a\": { \"player_id\": \"uuid3\", \"display_name\": \"Carlos\" },\n        \"player_b\": null,\n        \"is_bye\": true,\n        \"status\": \"AUTO_WIN\"\n      }\n    ]\n  },\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Bracket",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Has bracket', () => pm.expect(res.data.matches).to.be.an('array'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/tournament/bracket",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "tournament", "bracket"]
+            },
+            "description": "Obtiene el estado actual del bracket incluyendo matches completados y pendientes. Útil para renderizar la vista de bracket en la PWA."
+          },
+          "response": [
+            {
+              "name": "200 - Bracket State",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"bracket_id\": \"bracket-uuid\",\n    \"total_rounds\": 2,\n    \"current_round\": 2,\n    \"champion\": null,\n    \"matches\": [\n      {\n        \"match_id\": \"m1\",\n        \"round\": 1,\n        \"player_a\": { \"player_id\": \"uuid1\", \"display_name\": \"Jose\" },\n        \"player_b\": { \"player_id\": \"uuid2\", \"display_name\": \"Maria\" },\n        \"winner_id\": \"uuid1\",\n        \"status\": \"COMPLETED\"\n      },\n      {\n        \"match_id\": \"m3\",\n        \"round\": 2,\n        \"player_a\": { \"player_id\": \"uuid1\", \"display_name\": \"Jose\" },\n        \"player_b\": { \"player_id\": \"uuid3\", \"display_name\": \"Carlos\" },\n        \"winner_id\": null,\n        \"status\": \"PENDING\"\n      }\n    ]\n  },\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Advance Bracket",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "if (res.data.champion) {",
+                  "  console.log('👑 Champion:', res.data.champion.display_name);",
+                  "} else {",
+                  "  console.log('➡️ Advanced to round:', res.data.current_round);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-host-token", "value": "{{host_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"host_player_id\": \"{{host_player_id}}\",\n  \"completed_round\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/tournament/bracket/advance",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "tournament", "bracket", "advance"]
+            },
+            "description": "**Solo Host.** Avanza el bracket a la siguiente ronda una vez que todos los matches de la ronda actual están completados.\n\nSi solo queda 1 jugador, declara campeón y termina el torneo."
+          },
+          "response": [
+            {
+              "name": "200 - Advanced to Next Round",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"current_round\": 2,\n    \"champion\": null,\n    \"new_matches\": [\n      {\n        \"match_id\": \"m3\",\n        \"round\": 2,\n        \"player_a\": { \"player_id\": \"uuid1\", \"display_name\": \"Jose\" },\n        \"player_b\": { \"player_id\": \"uuid3\", \"display_name\": \"Carlos\" },\n        \"status\": \"PENDING\"\n      }\n    ]\n  },\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 - Champion Declared",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"data\": {\n    \"current_round\": 3,\n    \"champion\": {\n      \"player_id\": \"uuid1\",\n      \"display_name\": \"Jose\"\n    },\n    \"new_matches\": []\n  },\n  \"error\": null\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🔌 WebSocket Events",
+      "description": "Documentación de los eventos WebSocket. Estos no son HTTP requests — son para referencia del protocolo WS.\n\n**Conexión WS:**\nwss://{ws-api-id}.execute-api.us-east-1.amazonaws.com/prod?session_id={session_id}&player_id={player_id}\n\n**Eventos que el servidor emite (Server → Client):**\n- PLAYER_JOINED\n- PLAYER_DISCONNECTED\n- ROUND_STARTED\n- MOVE_SUBMITTED (sin revelar el movimiento)\n- ROUND_RESOLVED (con todos los movimientos)\n- BRACKET_UPDATED\n- GAME_FINISHED",
+      "item": [
+        {
+          "name": "[WS DOC] PLAYER_JOINED event",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/players",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "players"]
+            },
+            "description": "**Este es un documento de referencia del evento WebSocket, no un endpoint REST.**\n\nEl servidor emite este evento a todos los clientes conectados cuando un nuevo jugador se une.\n\n```json\n{\n  \"event\": \"PLAYER_JOINED\",\n  \"payload\": {\n    \"player_id\": \"guest-uuid-xyz\",\n    \"display_name\": \"Maria\",\n    \"total_players\": 5\n  }\n}\n```"
+          }
+        },
+        {
+          "name": "[WS DOC] ROUND_RESOLVED event",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/game/round/1",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "game", "round", "1"]
+            },
+            "description": "**Este es un documento de referencia del evento WebSocket, no un endpoint REST.**\n\nEl servidor emite este evento cuando todos los jugadores enviaron su movimiento y la ronda fue resuelta.\n\n```json\n{\n  \"event\": \"ROUND_RESOLVED\",\n  \"payload\": {\n    \"round_number\": 1,\n    \"winner_id\": \"host-uuid\",\n    \"is_tie\": false,\n    \"results\": {\n      \"host-uuid\": { \"move\": \"ROCK\", \"outcome\": \"WIN\", \"display_name\": \"Jose\" },\n      \"guest-uuid-xyz\": { \"move\": \"SCISSORS\", \"outcome\": \"LOSE\", \"display_name\": \"Maria\" }\n    },\n    \"leaderboard\": [\n      { \"player_id\": \"host-uuid\", \"display_name\": \"Jose\", \"score\": 1 },\n      { \"player_id\": \"guest-uuid-xyz\", \"display_name\": \"Maria\", \"score\": 0 }\n    ]\n  }\n}\n```"
+          }
+        }
+      ]
+    },
+    {
+      "name": "🧪 E2E Flow — Full Game",
+      "description": "Flujo completo de prueba end-to-end. Ejecutar en orden para simular una partida completa FREE_FOR_ALL entre Host y 1 Guest.",
+      "item": [
+        {
+          "name": "Step 1 — Create Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-host-token", "value": "{{host_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"host_player_id\": \"{{host_player_id}}\",\n  \"display_name\": \"Host E2E\",\n  \"mode\": \"FREE_FOR_ALL\",\n  \"max_players\": 10\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions",
+              "host": ["{{base_url}}"],
+              "path": ["sessions"]
+            }
+          }
+        },
+        {
+          "name": "Step 2 — Guest Joins",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"display_name\": \"Guest E2E\",\n  \"token\": \"{{qr_token}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/players",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "players"]
+            }
+          }
+        },
+        {
+          "name": "Step 3 — Host Submits ROCK",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"player_id\": \"{{host_player_id}}\",\n  \"move\": \"ROCK\",\n  \"round_number\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/game/move",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "game", "move"]
+            }
+          }
+        },
+        {
+          "name": "Step 4 — Guest Submits SCISSORS",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"player_id\": \"{{guest_player_id}}\",\n  \"move\": \"SCISSORS\",\n  \"round_number\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/game/move",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "game", "move"]
+            }
+          }
+        },
+        {
+          "name": "Step 5 — Get Round Result",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}/game/round/1",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}", "game", "round", "1"]
+            }
+          }
+        },
+        {
+          "name": "Step 6 — Close Session",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "x-host-token", "value": "{{host_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/sessions/{{session_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["sessions", "{{session_id}}"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

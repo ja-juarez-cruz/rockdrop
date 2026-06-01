@@ -1,0 +1,6 @@
+# Copia este archivo a prod.tfvars y rellena los valores reales.
+# NUNCA commitees prod.tfvars — está en .gitignore.
+
+environment = "prod"
+aws_region  = "us-east-1"
+ws_stage    = "prod"
