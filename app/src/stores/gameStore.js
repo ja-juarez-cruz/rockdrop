@@ -260,7 +260,10 @@ const useGameStore = create((set, get) => ({
   },
 
   championDeclared(payload) {
-    set({ championId: payload.champion_id })
+    set((state) => ({
+      championId: payload.champion_id,
+      session: state.session ? { ...state.session, status: 'FINISHED' } : state.session,
+    }))
   },
 
   /**

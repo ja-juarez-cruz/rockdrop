@@ -1,341 +1,161 @@
-# RockDrop — Guía de integración para el frontend
+# RockDrop — Guía de integración frontend
 
-Piedra Papel Tijera multijugador sin instalación. El host crea una sesión desde la app nativa, los guests se unen escaneando un QR desde el navegador.
+Stack: React 18 · Vite · Tailwind CSS · Zustand · HashRouter
 
 ---
 
 ## Entornos
 
-| Entorno | REST base URL | WebSocket URL |
-|---------|--------------|---------------|
-| Dev  | `https://{api-id}.execute-api.us-east-1.amazonaws.com/dev`  | `wss://{ws-id}.execute-api.us-east-1.amazonaws.com/dev`  |
-| Prod | `https://{api-id}.execute-api.us-east-1.amazonaws.com/prod` | `wss://{ws-id}.execute-api.us-east-1.amazonaws.com/prod` |
+| Entorno | URL |
+|---|---|
+| Dev (CloudFront) | `https://d2yd85vzfy5ijm.cloudfront.net` |
+| Dev (API REST) | `https://2kvig6o394.execute-api.us-east-1.amazonaws.com/dev` |
+| Dev (WebSocket) | `wss://{ws-id}.execute-api.us-east-1.amazonaws.com/dev` |
 
-Los IDs concretos se obtienen de los outputs de Terraform tras el deploy:
+Las URLs exactas están en los outputs de Terraform:
 ```bash
-make plan-dev   # muestra rest_api_url y ws_api_url en outputs
+make plan-dev  # muestra rest_api_url y ws_api_url
 ```
+
+---
+
+## Routing
+
+Usa `HashRouter` — las rutas son del tipo `https://domain.com/#/ruta`.
+
+| Ruta | Página | Quién la ve |
+|---|---|---|
+| `/#/host` | `HostPage` | Host (crear sesión) |
+| `/#/join?token=xxx` | `JoinPage` | Guest (unirse con QR) |
+| `/#/lobby/:sessionId` | `LobbyPage` | Todos (sala de espera) |
+| `/#/game/:sessionId` | `GamePage` | Todos (FREE_FOR_ALL) |
+| `/#/tournament/:sessionId` | `TournamentPage` | Todos (TOURNAMENT) |
+| `/#/finished/:sessionId` | `FinishedPage` | Todos (resultado final) |
+
+El `join_url` del QR **debe incluir el `#`**: `https://domain.com/#/join?token=xxx`.
 
 ---
 
 ## Autenticación
 
 | Actor | Mecanismo |
-|-------|-----------|
-| **Host** (app nativa) | Header `x-host-token: <api_key>` en endpoints protegidos |
-| **Guest** (PWA/browser) | JWT `qr_token` en el body de Join Session. Firmado con HS256, expira 1 h |
+|---|---|
+| Host (web) | `x-host-token` header en endpoints protegidos |
+| Guest | JWT `qr_token` en el body de `POST /players` — firmado HS256, expira 1h |
 
-Los endpoints REST no tienen authorizer en API Gateway — la validación es manual en cada Lambda. Los endpoints marcados con 🔒 validan el `x-host-token`.
+El `host_player_id` se genera con `crypto.randomUUID()` y se persiste en `localStorage`.
+
+---
+
+## Variables de entorno
+
+```bash
+# app/.env.local (dev local)
+VITE_API_URL=https://2kvig6o394.execute-api.us-east-1.amazonaws.com/dev
+VITE_WS_URL=wss://{ws-id}.execute-api.us-east-1.amazonaws.com/dev
+```
+
+En desarrollo local (`npm run dev`), `API_URL = '/api'` — Vite proxea al API Gateway evitando CORS.  
+En producción (`npm run build`), `API_URL = VITE_API_URL`.
 
 ---
 
 ## Formato de respuesta
 
-Todas las respuestas siguen la misma envoltura:
-
 ```json
-{ "data": { ... }, "error": null }       // éxito
-{ "data": null, "error": "mensaje" }     // error
+{ "data": { ... }, "error": null }   // éxito
+{ "data": null, "error": "mensaje" } // error
 ```
 
-Los errores de validación retornan `400`. Los códigos de estado específicos están documentados por endpoint.
+`api.js` hace unwrap de `response.data` y lanza `Error` con `response.error` en caso de fallo.
 
 ---
 
 ## REST API
 
-### Sessions
+### POST /sessions 🔒
+Crea sesión. Guarda `session_id`, `qr_token`, `ws_url` en store.
 
-#### `POST /sessions` 🔒
-Crea una nueva sesión. El host_player_id es el UUID del jugador host generado por la app nativa.
-
-**Request**
 ```json
-{
-  "host_player_id": "string (UUID)",
-  "display_name": "string",
-  "mode": "FREE_FOR_ALL | TOURNAMENT",
-  "max_players": 2–100
-}
+// Request
+{ "host_player_id": "uuid", "display_name": "string", "mode": "FREE_FOR_ALL|TOURNAMENT", "max_players": 2-100 }
+
+// Response 201
+{ "data": { "session_id": "uuid", "qr_token": "eyJ...", "ws_url": "wss://...", "join_url": "https://.../#/join?token=..." } }
 ```
 
-**Response `201`**
+### POST /sessions/{id}/start 🔒
+Inicia el juego. Para TOURNAMENT genera el bracket automáticamente.
+
 ```json
-{
-  "data": {
-    "session_id": "uuid",
-    "qr_token": "eyJhbGci...",
-    "ws_url": "wss://...",
-    "join_url": "https://rockdrop.app/join?token=eyJhbGci..."
-  },
-  "error": null
-}
-```
-
-> `join_url` es la URL que se codifica en el QR. El frontend la puede generar también como `https://rockdrop.app/join?token={qr_token}`.
-> El host debe conectarse al WebSocket usando `ws_url?session_id={session_id}&player_id={host_player_id}` inmediatamente después.
-
----
-
-#### `GET /sessions/{session_id}`
-Estado de la sesión. Disponible para todos.
-
-**Response `200`**
-```json
-{
-  "data": {
-    "session_id": "uuid",
-    "status": "WAITING | PLAYING | FINISHED",
-    "mode": "FREE_FOR_ALL | TOURNAMENT",
-    "current_round": 0,
-    "max_players": 30,
-    "host_player_id": "uuid",
-    "created_at": "2026-06-01T18:00:00Z"
-  },
-  "error": null
-}
-```
-
-> `qr_token` está deliberadamente excluido de esta respuesta.
-
-**Errores**
-| Código | Causa |
-|--------|-------|
-| `404` | Sesión no encontrada o expirada (TTL 1 h) |
-
----
-
-#### `DELETE /sessions/{session_id}` 🔒
-Cierra la sesión. Emite `GAME_FINISHED` por WebSocket a todos los jugadores conectados.
-
-**Response `200`**
-```json
-{
-  "data": { "session_id": "uuid", "status": "FINISHED" },
-  "error": null
-}
-```
-
----
-
-### Players
-
-#### `POST /sessions/{session_id}/players`
-Guest se une a la sesión usando el JWT del QR.
-
-**Request**
-```json
-{
-  "display_name": "string",
-  "token": "eyJhbGci..."
-}
-```
-
-**Response `201`**
-```json
-{
-  "data": {
-    "player_id": "uuid",
-    "session_id": "uuid",
-    "display_name": "string",
-    "ws_url": "wss://..."
-  },
-  "error": null
-}
-```
-
-> El guest debe conectarse al WebSocket con `ws_url?session_id={session_id}&player_id={player_id}` justo después de recibir esta respuesta.
-
-**Errores**
-| Código | Causa |
-|--------|-------|
-| `401` | Token inválido o expirado |
-| `403` | El token no pertenece a esta sesión |
-| `404` | Sesión no encontrada |
-| `409` | Sesión llena o no en estado `WAITING` |
-
----
-
-#### `GET /sessions/{session_id}/players`
-Lista todos los jugadores con su estado de conexión y score.
-
-**Response `200`**
-```json
-{
-  "data": {
-    "players": [
-      {
-        "player_id": "uuid",
-        "display_name": "string",
-        "is_host": true,
-        "score": 3,
-        "status": "CONNECTED | DISCONNECTED"
-      }
-    ],
-    "count": 1
-  },
-  "error": null
-}
-```
-
----
-
-### Game
-
-#### `POST /sessions/{session_id}/game/move`
-Jugador envía su movimiento para la ronda actual. La sesión debe estar en estado `PLAYING`.
-
-**Request**
-```json
-{
-  "player_id": "uuid",
-  "move": "ROCK | PAPER | SCISSORS",
-  "round_number": 1
-}
-```
-
-**Response `200`**
-```json
-{
-  "data": {
-    "accepted": true,
-    "round_number": 1,
-    "waiting_for": 1
-  },
-  "error": null
-}
-```
-
-> Cuando `waiting_for` llega a `0`, EventBridge dispara `resolve_round` automáticamente y el resultado llega por WebSocket como `ROUND_RESOLVED`.
-
-**Errores**
-| Código | Causa |
-|--------|-------|
-| `409` | Sesión no en estado `PLAYING` |
-| `409` | El jugador ya envió movimiento en esta ronda |
-| `400` | Move inválido |
-
----
-
-#### `GET /sessions/{session_id}/game/round/{round_number}`
-Resultado de una ronda ya resuelta.
-
-**Response `200`**
-```json
-{
-  "data": {
-    "session_id": "uuid",
-    "round_number": "1",
-    "winner_id": "uuid | null",
-    "is_tie": false,
-    "results": {
-      "{player_id}": {
-        "move": "ROCK",
-        "outcome": "WIN | LOSE | TIE",
-        "display_name": "string"
-      }
-    },
-    "resolved_at": "2026-06-01T18:05:32Z"
-  },
-  "error": null
-}
-```
-
-**Errores**
-| Código | Causa |
-|--------|-------|
-| `404` | Ronda no existe o no resuelta aún |
-
----
-
-### Tournament
-
-#### `POST /sessions/{session_id}/tournament/bracket` 🔒
-Genera el bracket. Solo disponible en sesiones con `mode: TOURNAMENT`. Transiciona la sesión a `PLAYING`.
-
-**Request**
-```json
+// Request
 { "host_player_id": "uuid" }
+
+// Response 200
+{ "data": { "session_id": "uuid", "status": "PLAYING", "bracket": { ... } } }
+// Emite WS: GAME_STARTED
 ```
 
-**Response `201`**
+### GET /sessions/{id}
 ```json
-{
-  "data": {
-    "bracket": {
-      "size": 4,
-      "total_rounds": 2,
-      "current_round": 1,
-      "matches": [
-        {
-          "match_id": "r1_m1",
-          "round": 1,
-          "player1": { "player_id": "uuid", "display_name": "string" },
-          "player2": { "player_id": "uuid", "display_name": "string" },
-          "winner_id": null,
-          "status": "PENDING | BYE"
-        }
-      ]
-    }
-  },
-  "error": null
-}
+// Response 200
+{ "data": { "session_id": "uuid", "status": "WAITING|PLAYING|FINISHED", "mode": "string", "current_round": 1, "max_players": 30, "host_player_id": "uuid", "created_at": "ISO8601" } }
 ```
 
-> Si el número de jugadores no es potencia de 2, se asignan byes automáticos (status `BYE`, `winner_id` = player1).
+> `qr_token` y `join_url` están **excluidos** de esta respuesta.
 
-**Errores**
+### DELETE /sessions/{id} 🔒
+Cierra sesión. Emite WS `GAME_FINISHED`.
+
+### POST /sessions/{id}/players
+Guest se une con el JWT del QR. Guarda `player_id` en store.
+
+```json
+// Request
+{ "display_name": "string", "token": "eyJ..." }
+
+// Response 201
+{ "data": { "player_id": "uuid", "session_id": "uuid", "display_name": "string", "ws_url": "wss://..." } }
+```
+
 | Código | Causa |
-|--------|-------|
-| `409` | Sesión no es `TOURNAMENT` |
-| `409` | Menos de 2 jugadores |
+|---|---|
+| `401` | Token inválido o expirado |
+| `403` | Token no corresponde a esta sesión |
+| `409` | Sesión llena o no en estado WAITING |
 
----
-
-#### `GET /sessions/{session_id}/tournament/bracket`
-Estado actual del bracket.
-
-**Response `200`**
+### GET /sessions/{id}/players
 ```json
-{
-  "data": {
-    "bracket": {
-      "size": 4,
-      "total_rounds": 2,
-      "current_round": 2,
-      "matches": [ ... ],
-      "champion": null
-    }
-  },
-  "error": null
-}
+// Response 200
+{ "data": { "players": [{ "player_id": "uuid", "display_name": "string", "is_host": false, "score": 0, "status": "CONNECTED|DISCONNECTED" }], "count": 3 } }
 ```
 
-> Cuando el torneo termina, `bracket.champion` contiene `{ "player_id": "uuid", "display_name": "string" }`.
-
----
-
-#### `PUT /sessions/{session_id}/tournament/bracket/advance` 🔒
-Avanza el bracket a la siguiente ronda. Llamar cuando todos los matches de la ronda actual están completados.
-
-**Request**
+### POST /sessions/{id}/game/move
 ```json
-{
-  "host_player_id": "uuid",
-  "completed_round": 1
-}
+// Request FREE_FOR_ALL
+{ "player_id": "uuid", "move": "ROCK|PAPER|SCISSORS", "round_number": 1 }
+
+// Request TOURNAMENT
+{ "player_id": "uuid", "move": "ROCK|PAPER|SCISSORS", "round_number": 1, "match_id": "r1_m1" }
+
+// Response 200
+{ "data": { "accepted": true, "round_number": 1, "waiting_for": 1, "match_id": "r1_m1" } }
 ```
 
-**Response `200`**
+> Cuando `waiting_for = 0`, EventBridge dispara `resolve_round` → WS `ROUND_RESOLVED`.
+
+### GET /sessions/{id}/game/round/{n}
 ```json
-{
-  "data": {
-    "current_round": 2,
-    "champion": null,
-    "new_matches": [ ... ]
-  },
-  "error": null
-}
+// Response 200
+{ "data": { "round_number": "1", "results": { "uuid": { "move": "ROCK", "outcome": "WIN|LOSE|TIE" } }, "winner_id": "uuid|null", "resolved_at": "ISO8601" } }
+```
+
+> `results` es un **objeto** `{player_id: {...}}`, no array.
+
+### GET /sessions/{id}/tournament/bracket
+```json
+// Response 200
+{ "data": { "bracket": { "wins_needed": 2, "current_tournament_round": 1, "total_tournament_rounds": 2, "champion_id": null, "matches": [ ... ] } } }
 ```
 
 ---
@@ -343,228 +163,169 @@ Avanza el bracket a la siguiente ronda. Llamar cuando todos los matches de la ro
 ## WebSocket
 
 ### Conexión
-
 ```
-wss://{ws-id}.execute-api.us-east-1.amazonaws.com/{stage}
-  ?session_id={session_id}
-  &player_id={player_id}
+wss://{ws-id}.execute-api.us-east-1.amazonaws.com/{env}
+  ?session_id={id}&player_id={id}
 ```
 
-La conexión actualiza el estado del jugador a `CONNECTED` en DynamoDB. Al desconectarse (`$disconnect`), el estado vuelve a `DISCONNECTED` y se limpia el `connection_id`.
+Al conectar → jugador pasa a `CONNECTED` en DynamoDB.  
+Al desconectar → `DISCONNECTED`, API GW cierra idle connections a los 10 min.
 
-### Formato de mensajes
-
-Todos los mensajes siguen la misma estructura:
-
+### Formato mensajes
 ```json
-{
-  "event": "NOMBRE_EVENTO",
-  "payload": { ... }
-}
+{ "event": "NOMBRE_EVENTO", "payload": { ... } }
 ```
 
-### Eventos del servidor → cliente
+> **Crítico:** el campo es `event`, no `type`. `WebSocketManager.js` usa `msg.event || msg.type`.
+
+### Eventos servidor → cliente
+
+#### `GAME_STARTED`
+```json
+{ "session_id": "uuid", "mode": "TOURNAMENT", "bracket": { ... } }
+```
+Emitido cuando el host llama `start_session`. En `LobbyPage`, el polling detecta status PLAYING y navega a `/game` o `/tournament`.
 
 #### `PLAYER_JOINED`
-Emitido a todos cuando un guest hace join via REST.
 ```json
-{
-  "event": "PLAYER_JOINED",
-  "payload": {
-    "player_id": "uuid",
-    "display_name": "string",
-    "total_players": 3
-  }
-}
-```
-
-#### `MOVE_SUBMITTED`
-Emitido a todos cuando un jugador envía su movimiento. **No revela el movimiento**.
-```json
-{
-  "event": "MOVE_SUBMITTED",
-  "payload": {
-    "player_id": "uuid",
-    "round_number": 1,
-    "submitted_count": 1,
-    "waiting_for": 1
-  }
-}
-```
-
-#### `ROUND_RESOLVED`
-Emitido a todos cuando todos los jugadores enviaron su movimiento y `resolve_round` procesó el resultado.
-```json
-{
-  "event": "ROUND_RESOLVED",
-  "payload": {
-    "round_number": 1,
-    "winner_id": "uuid | null",
-    "is_tie": false,
-    "results": {
-      "{player_id}": {
-        "move": "ROCK",
-        "outcome": "WIN | LOSE | TIE",
-        "display_name": "string"
-      }
-    },
-    "leaderboard": [
-      { "player_id": "uuid", "display_name": "string", "score": 2 }
-    ]
-  }
-}
-```
-
-#### `BRACKET_UPDATED`
-Emitido a todos cuando se genera o avanza el bracket de torneo.
-```json
-{
-  "event": "BRACKET_UPDATED",
-  "payload": {
-    "bracket": {
-      "current_round": 2,
-      "champion": null,
-      "new_matches": [ ... ]
-    }
-  }
-}
-```
-
-#### `GAME_FINISHED`
-Emitido a todos cuando el host cierra la sesión.
-```json
-{
-  "event": "GAME_FINISHED",
-  "payload": {
-    "session_id": "uuid",
-    "reason": "host_closed"
-  }
-}
+{ "player_id": "uuid", "display_name": "string", "total_players": 3 }
 ```
 
 #### `PLAYER_DISCONNECTED`
-Emitido a todos cuando un jugador pierde la conexión WebSocket.
+```json
+{ "player_id": "uuid", "display_name": "string" }
+```
+
+#### `MOVE_SUBMITTED`
+```json
+{ "player_id": "uuid", "match_id": "r1_m1", "round_number": 1, "submitted_count": 1, "waiting_for": 1 }
+```
+No revela el movimiento. `match_id` solo en TOURNAMENT.
+
+#### `ROUND_RESOLVED`
 ```json
 {
-  "event": "PLAYER_DISCONNECTED",
-  "payload": {
-    "player_id": "uuid",
-    "display_name": "string"
-  }
+  "round_number": 1,
+  "match_id": "r1_m1",
+  "results": {
+    "uuid1": { "move": "ROCK",     "outcome": "WIN" },
+    "uuid2": { "move": "SCISSORS", "outcome": "LOSE" }
+  },
+  "winner_id": "uuid1",
+  "match_score": { "uuid1": 1, "uuid2": 0 }
 }
 ```
+`match_id` y `match_score` solo en TOURNAMENT.
 
----
-
-## Flujos completos
-
-### Free For All
-
+#### `MATCH_FINISHED` (TOURNAMENT)
+```json
+{ "match_id": "r1_m1", "winner_id": "uuid", "loser_id": "uuid", "winner_name": "string", "loser_name": "string", "score": { "uuid1": 2, "uuid2": 1 } }
 ```
-Host                           Backend                        Guest(s)
- │                                │                               │
- ├─ POST /sessions ──────────────►│                               │
- │◄── { session_id, qr_token } ───┤                               │
- ├─ WS connect ──────────────────►│                               │
- │                                │                               │
- │          [Host muestra QR]     │                               │
- │                                │◄── POST .../players (token) ──┤
- │                                ├── PLAYER_JOINED broadcast ───►│
- │◄─── PLAYER_JOINED ─────────────┤                               │
- │                                │◄── WS connect ────────────────┤
- │                                │                               │
- │  [Host inicia ronda — ver nota]│                               │
- │                                │                               │
- ├─ POST .../game/move ──────────►│                               │
- │                                ├── MOVE_SUBMITTED broadcast ──►│
- │                                │◄── POST .../game/move ─────────┤
- │                                ├── MOVE_SUBMITTED broadcast ──►│
- │◄─── MOVE_SUBMITTED ────────────┤   [todos enviaron]            │
- │                                │                               │
- │                          [EventBridge]                         │
- │                          resolve_round                         │
- │                                │                               │
- │◄─── ROUND_RESOLVED ────────────┼──────────────────────────────►│
- │                                │                               │
- ├─ DELETE /sessions ────────────►│                               │
- │                                ├── GAME_FINISHED broadcast ───►│
+El loser navega a `/finished/:sessionId` con mensaje "Eliminado".
+
+#### `TOURNAMENT_ROUND_COMPLETE` (TOURNAMENT)
+```json
+{ "next_tournament_round": 2, "new_matches": [ ... ], "bracket": { ... } }
 ```
 
-> **Nota — transición a `PLAYING` en FREE_FOR_ALL:** `submit_move` requiere que la sesión esté en estado `PLAYING`. Para este modo no existe un endpoint de "iniciar juego" todavía — la sesión debe actualizarse a `PLAYING` manualmente o bien agregar un endpoint `POST /sessions/{id}/start`. Pendiente implementar.
-
----
-
-### Tournament
-
+#### `CHAMPION_DECLARED` (TOURNAMENT)
+```json
+{ "champion_id": "uuid", "champion_name": "string" }
 ```
-Host                           Backend                        Guests
- │                                │                               │
- ├─ POST /sessions (TOURNAMENT) ─►│                               │
- ├─ [Guests join + WS connect]   ─────────────────────────────► │
- │                                │                               │
- ├─ POST .../tournament/bracket ─►│  [sesión → PLAYING]           │
- │◄─── BRACKET_UPDATED ───────────┼──────────────────────────────►│
- │                                │                               │
- │  [ronda 1: cada match es 1v1]  │                               │
- ├─ POST .../game/move ──────────►│                               │
- │                          [EventBridge resolve]                 │
- │◄─── ROUND_RESOLVED ────────────┼──────────────────────────────►│
- │                                │                               │
- ├─ PUT .../bracket/advance ─────►│                               │
- │◄─── BRACKET_UPDATED ───────────┼──────────────────────────────►│
- │                                │                               │
- │     [repetir por rondas]       │                               │
- │                                │                               │
- ├─ PUT .../bracket/advance ─────►│  [champion declarado]         │
- │◄─── BRACKET_UPDATED (champion)─┼──────────────────────────────►│
+Todos navegan a `/finished/:sessionId`.
+
+#### `GAME_FINISHED` (FREE_FOR_ALL)
+```json
+{ "session_id": "uuid", "reason": "host_closed" }
 ```
 
 ---
 
-## Modelos de datos
+## Flujo Free For All
 
-### GameMode
 ```
-FREE_FOR_ALL  — todos contra todos, gana quien acumula más puntos
-TOURNAMENT    — bracket eliminatorio 1v1
+Host: /host → crea sesión → /lobby/:id (muestra QR)
+Guest: escanea QR → /#/join?token=xxx → /lobby/:id
+
+LobbyPage:
+  - polling GET /sessions cada 3s mientras WAITING
+  - host ve botón "Iniciar partida" (mínimo 2 jugadores)
+  - WS: PLAYER_JOINED actualiza lista
+  - cuando session.status → PLAYING: navega a /game/:id
+
+GamePage:
+  - MoveSelector con 3 botones 🪨📄✂️
+  - al seleccionar: POST /game/move
+  - lista jugadores: ✓ Listo / ⏳ Pendiente (vía MOVE_SUBMITTED WS)
+  - ROUND_RESOLVED: overlay RoundResult (5s) con resultado de cada jugador
+  - GAME_FINISHED: navega a /finished/:id
 ```
 
-### SessionStatus
+## Flujo Tournament
+
 ```
-WAITING   — esperando jugadores, acepta joins
-PLAYING   — juego en curso, acepta moves
-FINISHED  — sesión cerrada
+Host: crea sesión mode=TOURNAMENT → lobby → "Iniciar partida"
+  start_session genera bracket automático → todos van a /tournament/:id
+
+TournamentPage:
+  - marcador: "Tú 1 — 0 Rival"
+  - "Primero en ganar 2 rondas avanza"
+  - MoveSelector (incluye match_id en submit)
+  - ROUND_RESOLVED: overlay con resultado de la ronda
+  - MATCH_FINISHED:
+      loser → overlay "Eliminado por X" → /finished/:id (3.5s)
+      winner → espera TOURNAMENT_ROUND_COMPLETE
+  - TOURNAMENT_ROUND_COMPLETE: nuevo match, marcador resetea
+  - CHAMPION_DECLARED: → /finished/:id
+
+FinishedPage:
+  - eliminado: "Fuiste eliminado — [ganador] ganó el partido"
+  - campeón:   "¡Eres el campeón!" 🏆
+  - otros:     ranking final
 ```
 
-### PlayerStatus
-```
-CONNECTED     — tiene conexión WebSocket activa
-DISCONNECTED  — sin conexión (joined pero no conectado, o se desconectó)
-```
+---
 
-### Move / Outcome
-```
-Move:    ROCK | PAPER | SCISSORS
-Outcome: WIN  | LOSE  | TIE
+## Zustand store — Estado relevante
+
+```js
+{
+  // Sesión
+  sessionId, session, playerId, isHost, qrToken, wsUrl,
+
+  // Jugadores
+  players,            // [{ player_id, display_name, is_host, score, status }]
+
+  // Juego
+  currentRound,       // número de ronda dentro del match (1, 2, 3...)
+  myMove,             // movimiento enviado esta ronda
+  waitingFor,         // cuántos jugadores faltan
+  submittedPlayers,   // [player_id] que ya tiraron esta ronda
+  lastRoundResult,    // payload de ROUND_RESOLVED (para overlay)
+
+  // Torneo
+  bracket,            // objeto completo del bracket
+  myMatch,            // match activo del jugador actual
+  eliminatedBy,       // display_name del jugador que eliminó (si aplica)
+  championId,         // player_id del campeón (si aplica)
+
+  // WebSocket
+  wsStatus,           // 'connecting' | 'connected' | 'disconnected' | 'error'
+}
 ```
 
 ---
 
 ## Consideraciones de implementación
 
-**QR code**
-El `qr_token` es un JWT firmado con HS256. El frontend solo necesita codificarlo en un QR — no debe intentar descodificarlo. La validación ocurre en el backend al hacer join.
+**JWT del QR:** decodificar con `atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))` — sin librería.
 
-**Reconexión WebSocket**
-API Gateway WebSocket cierra conexiones inactivas a los 10 minutos. Implementar reconexión automática con back-off exponencial. Al reconectar, usar el mismo `player_id` — el `$connect` handler actualizará el `connection_id` en DynamoDB.
+**Hash routing y QR:** la URL del QR **debe** tener el formato `origin/#/join?token=xxx`. Sin el `#`, HashRouter no reconoce la ruta y redirige al catch-all `/host`.
 
-**Polling vs WebSocket**
-No hacer polling de `GET /sessions/{id}` para detectar cambios. Todos los eventos relevantes llegan por WebSocket. El REST GET es solo para carga inicial o recuperación de estado tras reconexión.
+**Reconexión WebSocket:** `WebSocketManager` implementa exponential backoff (1→2→4…s, máx 5 reintentos). Al reconectar con mismo `player_id`, `$connect` actualiza el `connection_id` en DynamoDB.
 
-**TTL de sesión**
-Las sesiones expiran en DynamoDB al cabo de 1 hora (`expires_at`). El `qr_token` JWT también expira en 1 hora. El frontend debe manejar el `404` de sesión expirada y mostrar un mensaje apropiado.
+**No polling en GamePage:** todos los cambios de estado (movimientos, resultados, bracket) llegan por WebSocket. El único polling es en LobbyPage (cada 3s) para detectar el cambio WAITING→PLAYING.
 
-**Orden de operaciones en join**
-1. `POST /sessions/{id}/players` → obtener `player_id` y `ws_url`
-2. Conectar WebSocket inmediatamente después
-3. No hacer otras llamadas REST antes de conectar el WS o se perderán los eventos que lleguen en ese intervalo
+**Scores en tiempo real:** `ROUND_RESOLVED` incluye `results.outcome` → store suma +1 al ganador directamente sin REST. En TOURNAMENT los puntos del match se calculan de `match_score`.
+
+**TTL sesión:** 1 hora desde creación. El cliente recibe 404 al intentar operar en sesión expirada.

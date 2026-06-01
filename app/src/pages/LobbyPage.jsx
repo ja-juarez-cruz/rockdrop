@@ -22,14 +22,6 @@ import Button from '../components/ui/Button.jsx'
 
 const POLL_INTERVAL_MS = 3000
 
-function buildJoinUrl(session) {
-  if (!session) return ''
-  const base = window.location.origin
-  // Prefer join_url from session; fall back to constructing from qr_token
-  return session.join_url
-    ? session.join_url
-    : `${base}/join?token=${session.qr_token ?? ''}`
-}
 
 export default function LobbyPage() {
   const { sessionId } = useParams()
@@ -121,11 +113,9 @@ export default function LobbyPage() {
   }
 
   // ── Build join URL for QR display ──────────────────────────────────────
-  const joinUrl = session?.join_url
-    ? session.join_url
-    : qrToken
-      ? `${window.location.origin}/join?token=${qrToken}`
-      : ''
+  const joinUrl = qrToken
+    ? `${window.location.origin}/#/join?token=${qrToken}`
+    : ''
 
   // ── Render ─────────────────────────────────────────────────────────────
   if (!session) {
@@ -178,62 +168,63 @@ export default function LobbyPage() {
         </Card>
       )}
 
-      {/* Waiting state / Start button */}
+      {/* Host: botón de inicio + lista de jugadores */}
       {isHost ? (
-        <Card>
-          <p className="text-xs text-zinc-500 mb-1">
-            {session.mode === 'TOURNAMENT' ? 'Modo Torneo' : 'Modo Todos contra Todos'}
-            {maxPlayers > 0 ? ` · Máx. ${maxPlayers} jugadores` : ''}
-          </p>
-          <p className="text-sm text-zinc-700 mb-4">
-            {session.mode === 'TOURNAMENT'
-              ? 'Cuando todos estén listos, inicia el torneo para generar el bracket.'
-              : 'Cuando todos estén listos, inicia la partida.'}
-          </p>
-          {startError && (
-            <p role="alert" className="text-xs text-red-500 mb-3">{startError}</p>
-          )}
-          <Button
-            fullWidth
-            loading={starting}
-            disabled={playerCount < 2}
-            onClick={handleStart}
-          >
-            {starting ? 'Iniciando…' : 'Iniciar partida'}
-          </Button>
-          {playerCount < 2 && (
-            <p className="text-xs text-zinc-400 text-center mt-2">
-              Mínimo 2 jugadores para iniciar
+        <>
+          <Card>
+            <p className="text-xs text-zinc-500 mb-1">
+              {playerCount >= 4 ? 'Modo Torneo (automático)' : 'Modo Todos contra Todos (automático)'}
+              {maxPlayers > 0 ? ` · Máx. ${maxPlayers} jugadores` : ''}
             </p>
-          )}
-        </Card>
-      ) : (
-        <Card padding="sm">
-          <div className="flex items-center gap-3 py-1">
-            <Spinner size="sm" className="text-blue-500 shrink-0" />
-            <div>
-              <p className="text-sm font-medium text-zinc-900">
-                Esperando que el anfitrión inicie el juego…
+            <p className="text-sm text-zinc-700 mb-4">
+              {playerCount >= 4
+                ? 'Con 4 o más jugadores se genera bracket eliminatorio automáticamente.'
+                : 'Con menos de 4 jugadores todos juegan en grupo. Primero en 3 victorias gana.'}
+            </p>
+            {startError && (
+              <p role="alert" className="text-xs text-red-500 mb-3">{startError}</p>
+            )}
+            <Button
+              fullWidth
+              loading={starting}
+              disabled={playerCount < 2}
+              onClick={handleStart}
+            >
+              {starting ? 'Iniciando…' : 'Iniciar partida'}
+            </Button>
+            {playerCount < 2 && (
+              <p className="text-xs text-zinc-400 text-center mt-2">
+                Mínimo 2 jugadores para iniciar
               </p>
-              <p className="text-xs text-zinc-400 mt-0.5">
-                {session.mode === 'TOURNAMENT' ? 'Modo Torneo' : 'Modo Todos contra Todos'}
-              </p>
-            </div>
-          </div>
-        </Card>
-      )}
+            )}
+          </Card>
 
-      {/* Player list */}
-      <div>
-        <h2 className="text-sm font-semibold text-zinc-700 mb-3">
-          Jugadores ({playerCount})
-        </h2>
-        <PlayerList
-          players={players}
-          playerId={playerId}
-          maxPlayers={maxPlayers || undefined}
-        />
-      </div>
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-700 mb-3">
+              Jugadores ({playerCount})
+            </h2>
+            <PlayerList
+              players={players}
+              playerId={playerId}
+              maxPlayers={maxPlayers || undefined}
+            />
+          </div>
+        </>
+      ) : (
+        /* Guest: solo pantalla de espera */
+        <div className="flex flex-col items-center justify-center flex-1 gap-6 py-12">
+          <span className="text-6xl select-none" aria-hidden="true">🪨</span>
+          <div className="text-center">
+            <p className="text-lg font-bold text-zinc-900">
+              ¡Te uniste a la partida!
+            </p>
+            <p className="text-sm text-zinc-500 mt-1">
+              Esperando que el anfitrión inicie el juego…
+            </p>
+          </div>
+          <Spinner size="lg" className="text-blue-500" />
+        </div>
+      )}
 
       {/* Session ID footnote */}
       <p className="text-center text-xs text-zinc-300 mt-auto">

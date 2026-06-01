@@ -17,7 +17,7 @@ export default function TournamentPage() {
   const navigate      = useNavigate()
 
   const {
-    session, players, playerId, wsUrl,
+    session, players, playerId, isHost, wsUrl,
     bracket, myMatch,
     currentRound, myMove, waitingFor, submittedPlayers,
     lastRoundResult, eliminatedBy, championId,
@@ -210,46 +210,48 @@ export default function TournamentPage() {
         </Card>
       )}
 
-      {/* ── Bracket resumen ─────────────────────────────────────────────── */}
-      <Card padding="sm">
-        <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider px-1 mb-3">
-          Bracket · Ronda {bracket.current_tournament_round ?? 1}
-        </p>
-        {bracket.matches
-          .filter(m => m.tournament_round === (bracket.current_tournament_round ?? 1))
-          .map(m => {
-            const isMyMatch  = m.match_id === myMatch?.match_id
-            const isDone     = m.status === 'COMPLETE' || m.status === 'BYE'
-            return (
-              <div
-                key={m.match_id}
-                className={`flex items-center justify-between px-2 py-2.5 rounded-xl mb-1 ${
-                  isMyMatch ? 'bg-blue-50 border border-blue-200' : 'bg-white border border-zinc-100'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${isDone ? 'bg-zinc-300' : 'bg-green-400'}`} />
-                  <span className="text-sm text-zinc-800">
-                    {m.player1_name ?? 'BYE'}
-                    {' '}
-                    <span className="text-zinc-400 text-xs font-normal">vs</span>
-                    {' '}
-                    {m.player2_name ?? 'BYE'}
-                  </span>
+      {/* ── Bracket resumen — solo para el host ─────────────────────────── */}
+      {isHost && (
+        <Card padding="sm">
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider px-1 mb-3">
+            Todas las partidas · Ronda {bracket.current_tournament_round ?? 1}
+          </p>
+          {bracket.matches
+            .filter(m => m.tournament_round === (bracket.current_tournament_round ?? 1))
+            .map(m => {
+              const isMyMatch  = m.match_id === myMatch?.match_id
+              const isDone     = m.status === 'COMPLETE' || m.status === 'BYE'
+              return (
+                <div
+                  key={m.match_id}
+                  className={`flex items-center justify-between px-2 py-2.5 rounded-xl mb-1 ${
+                    isMyMatch ? 'bg-blue-50 border border-blue-200' : 'bg-white border border-zinc-100'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${isDone ? 'bg-zinc-300' : 'bg-green-400'}`} />
+                    <span className="text-sm text-zinc-800">
+                      {m.player1_name ?? 'BYE'}
+                      {' '}
+                      <span className="text-zinc-400 text-xs font-normal">vs</span>
+                      {' '}
+                      {m.player2_name ?? 'BYE'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-sm font-bold tabular-nums">
+                    <span className={m.winner_id === m.player1_id ? 'text-green-600' : 'text-zinc-700'}>
+                      {m.player1_wins}
+                    </span>
+                    <span className="text-zinc-300 font-light">–</span>
+                    <span className={m.winner_id === m.player2_id ? 'text-green-600' : 'text-zinc-700'}>
+                      {m.player2_wins}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5 text-sm font-bold tabular-nums">
-                  <span className={m.winner_id === m.player1_id ? 'text-green-600' : 'text-zinc-700'}>
-                    {m.player1_wins}
-                  </span>
-                  <span className="text-zinc-300 font-light">–</span>
-                  <span className={m.winner_id === m.player2_id ? 'text-green-600' : 'text-zinc-700'}>
-                    {m.player2_wins}
-                  </span>
-                </div>
-              </div>
-            )
-          })}
-      </Card>
+              )
+            })}
+        </Card>
+      )}
 
     </main>
   )

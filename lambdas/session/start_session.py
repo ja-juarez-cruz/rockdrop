@@ -11,7 +11,8 @@ from models import ok, err, make_response
 
 logger = Logger()
 
-WINS_NEEDED = 2  # Best of 3
+WINS_NEEDED = 2       # Rondas para ganar un match en torneo (best-of-3)
+TOURNAMENT_MIN = 4    # Mínimo de jugadores para activar modo torneo
 
 
 # ── Bracket builder ───────────────────────────────────────────────────────────
@@ -97,20 +98,21 @@ def handler(event: dict, context: LambdaContext) -> dict:
     if session.get("status") != "WAITING":
         return make_response(409, err(f"Session is already {session.get('status')}"))
 
-    mode = session.get("mode", "FREE_FOR_ALL")
+    players = get_all_players(session_id)
+    if len(players) < 2:
+        return make_response(409, err("Need at least 2 players to start"))
+
+    # Modo determinado automáticamente por el número de jugadores
+    mode = "TOURNAMENT" if len(players) >= TOURNAMENT_MIN else "FREE_FOR_ALL"
 
     if mode == "TOURNAMENT":
-        players = get_all_players(session_id)
-        if len(players) < 2:
-            return make_response(409, err("Need at least 2 players to start a tournament"))
-
         bracket = build_bracket(players)
 
         sessions_table.update_item(
             Key={"session_id": session_id, "sk": "METADATA"},
-            UpdateExpression="SET #s = :s, current_round = :r, bracket = :b",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":s": "PLAYING", ":r": 1, ":b": bracket},
+            UpdateExpression="SET #s = :s, #m = :m, current_round = :r, bracket = :b",
+            ExpressionAttributeNames={"#s": "status", "#m": "mode"},
+            ExpressionAttributeValues={":s": "PLAYING", ":m": "TOURNAMENT", ":r": 1, ":b": bracket},
         )
 
         broadcast(session_id, "GAME_STARTED", {
@@ -128,18 +130,19 @@ def handler(event: dict, context: LambdaContext) -> dict:
         return make_response(200, ok({
             "session_id": session_id,
             "status": "PLAYING",
+            "mode": "TOURNAMENT",
             "bracket": bracket,
         }))
 
     else:  # FREE_FOR_ALL
         sessions_table.update_item(
             Key={"session_id": session_id, "sk": "METADATA"},
-            UpdateExpression="SET #s = :s, current_round = :r",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":s": "PLAYING", ":r": 1},
+            UpdateExpression="SET #s = :s, #m = :m, current_round = :r",
+            ExpressionAttributeNames={"#s": "status", "#m": "mode"},
+            ExpressionAttributeValues={":s": "PLAYING", ":m": "FREE_FOR_ALL", ":r": 1},
         )
 
         broadcast(session_id, "GAME_STARTED", {"session_id": session_id, "mode": "FREE_FOR_ALL"})
-        logger.info("Session started", extra={"session_id": session_id})
+        logger.info("FFA started", extra={"session_id": session_id, "players": len(players)})
 
-        return make_response(200, ok({"session_id": session_id, "status": "PLAYING"}))
+        return make_response(200, ok({"session_id": session_id, "status": "PLAYING", "mode": "FREE_FOR_ALL"}))

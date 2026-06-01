@@ -3,7 +3,7 @@
  *
  * Host creates a new session from the browser (dev / demo flow).
  * Steps:
- *   1. Form: display_name, mode, max_players
+ *   1. Form: display_name, max_players (modo auto-determinado al iniciar)
  *   2. POST /sessions → show QR + join URL
  *   3. "Ir al lobby" → /lobby/:sessionId
  */
@@ -27,19 +27,6 @@ function getOrCreateHostId() {
   return id
 }
 
-const MODES = [
-  {
-    value: 'FREE_FOR_ALL',
-    label: 'Todos contra todos',
-    description: 'Gana quien acumule más puntos por ronda.',
-  },
-  {
-    value: 'TOURNAMENT',
-    label: 'Torneo',
-    description: 'Bracket eliminatorio 1v1 hasta el campeón.',
-  },
-]
-
 export default function HostPage() {
   const navigate = useNavigate()
   const { setPlayer, setSession } = useGameStore()
@@ -48,7 +35,6 @@ export default function HostPage() {
 
   // Form state
   const [displayName, setDisplayName] = useState('')
-  const [mode, setMode]               = useState('FREE_FOR_ALL')
   const [maxPlayers, setMaxPlayers]   = useState(10)
   const [loading, setLoading]         = useState(false)
   const [error, setError]             = useState('')
@@ -69,7 +55,6 @@ export default function HostPage() {
       const data = await createSession({
         host_player_id: hostPlayerId,
         display_name:   displayName.trim(),
-        mode,
         max_players:    maxPlayers,
       })
 
@@ -140,35 +125,6 @@ export default function HostPage() {
                 ].join(' ')}
               />
             </div>
-
-            {/* Mode selector */}
-            <fieldset className="flex flex-col gap-2">
-              <legend className="text-sm font-medium text-zinc-700 mb-1">Modo de juego</legend>
-              {MODES.map((m) => (
-                <label
-                  key={m.value}
-                  className={[
-                    'flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors',
-                    mode === m.value
-                      ? 'border-blue-500 bg-blue-50'
-                      : 'border-zinc-200 bg-white hover:border-zinc-300',
-                  ].join(' ')}
-                >
-                  <input
-                    type="radio"
-                    name="mode"
-                    value={m.value}
-                    checked={mode === m.value}
-                    onChange={() => setMode(m.value)}
-                    className="mt-0.5 accent-blue-600"
-                  />
-                  <div>
-                    <p className="text-sm font-medium text-zinc-900">{m.label}</p>
-                    <p className="text-xs text-zinc-500 mt-0.5">{m.description}</p>
-                  </div>
-                </label>
-              ))}
-            </fieldset>
 
             {/* Max players */}
             <div className="flex flex-col gap-2">

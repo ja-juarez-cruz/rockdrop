@@ -11,8 +11,9 @@ from ws import broadcast
 
 logger = Logger()
 
-BEATS       = {"ROCK": "SCISSORS", "SCISSORS": "PAPER", "PAPER": "ROCK"}
-WINS_NEEDED = 2
+BEATS            = {"ROCK": "SCISSORS", "SCISSORS": "PAPER", "PAPER": "ROCK"}
+WINS_NEEDED      = 2  # Rondas para ganar un match en torneo
+FFA_WINS_NEEDED  = 3  # Victorias de ronda para ganar en FFA
 
 
 def _build_next_round(players, tournament_round):
@@ -91,12 +92,28 @@ def _resolve_ffa(session_id, round_number):
         "resolved_at": datetime.utcnow().isoformat() + "Z",
     })
 
+    # Actualizar puntaje del ganador y verificar si alcanzó FFA_WINS_NEEDED
+    champion_id = None
+    champion_name = None
+    all_players = {p["player_id"]: p for p in get_all_players(session_id)}
+
     for pid, r in results.items():
         if r["outcome"] == "WIN":
-            players_table.update_item(
+            resp = players_table.update_item(
                 Key={"session_id": session_id, "player_id": pid},
                 UpdateExpression="ADD score :one",
                 ExpressionAttributeValues={":one": 1},
+                ReturnValues="ALL_NEW",
+            )
+            new_score = int(resp.get("Attributes", {}).get("score", 0))
+            if new_score >= FFA_WINS_NEEDED and champion_id is None:
+                champion_id = pid
+                champion_name = all_players.get(pid, {}).get("display_name", "Campeón")
+        else:
+            players_table.update_item(
+                Key={"session_id": session_id, "player_id": pid},
+                UpdateExpression="SET score = if_not_exists(score, :zero)",
+                ExpressionAttributeValues={":zero": 0},
             )
 
     broadcast(session_id, "ROUND_RESOLVED", {
@@ -104,6 +121,19 @@ def _resolve_ffa(session_id, round_number):
         "results": results,
         "winner_id": winner_id,
     })
+
+    if champion_id:
+        sessions_table.update_item(
+            Key={"session_id": session_id, "sk": "METADATA"},
+            UpdateExpression="SET #s = :s",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": "FINISHED"},
+        )
+        broadcast(session_id, "CHAMPION_DECLARED", {
+            "champion_id": champion_id,
+            "champion_name": champion_name,
+        })
+        logger.info("FFA champion declared", extra={"session_id": session_id, "champion_id": champion_id})
 
 
 # ── Tournament match ──────────────────────────────────────────────────────────

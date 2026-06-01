@@ -69,16 +69,19 @@ export function useWebSocket(wsUrl, sessionId, playerId) {
       GAME_FINISHED(payload) {
         gameFinished(payload)
       },
-      // Some backends emit a GAME_STARTED event with the session object
       GAME_STARTED(payload) {
-        if (payload.session) {
+        const current = useGameStore.getState().session
+        if (current) {
+          setSession({
+            ...current,
+            status: 'PLAYING',
+            mode: payload.mode ?? current.mode,
+          })
+        } else if (payload.session) {
           setSession(payload.session)
-        } else {
-          // Minimal update so pages can react to status change
-          const current = useGameStore.getState().session
-          if (current) {
-            setSession({ ...current, status: 'PLAYING' })
-          }
+        }
+        if (payload.bracket) {
+          bracketUpdated({ bracket: payload.bracket })
         }
       },
       SESSION_UPDATED(payload) {
