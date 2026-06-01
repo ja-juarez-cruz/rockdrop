@@ -59,6 +59,12 @@ jobs:
         working-directory: infra
         run: terraform apply -auto-approve tfplan
 
+      - name: Leer outputs de Terraform
+        working-directory: infra
+        run: |
+          echo "VITE_API_URL=$(terraform output -raw rest_api_url)" >> $GITHUB_ENV
+          echo "VITE_WS_URL=$(terraform output -raw ws_api_url)"   >> $GITHUB_ENV
+
       # ── Frontend web ────────────────────────────────────────────────────────
 
       - name: Setup Node.js
@@ -71,6 +77,9 @@ jobs:
       - name: Build frontend
         working-directory: app
         run: npm ci && npm run build
+        env:
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+          VITE_WS_URL:  ${{ env.VITE_WS_URL }}
 
       - name: Sync assets a S3 (caché larga)
         working-directory: infra
