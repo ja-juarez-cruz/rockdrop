@@ -9,7 +9,7 @@ function _findMyMatch(bracket, playerId) {
   return bracket.matches.find(m =>
     m.tournament_round === tr &&
     m.status === 'ACTIVE' &&
-    (m.player1_id === playerId || m.player2_id === playerId)
+    (m.player1_id === playerId || m.player2_id === playerId || m.player3_id === playerId)
   ) ?? null
 }
 
@@ -189,12 +189,13 @@ const useGameStore = create(
           ...bracket,
           matches: bracket.matches.map(m => {
             if (m.match_id !== payload.match_id) return m
-            return {
-              ...m,
+            const updates = {
               player1_wins: matchScore[m.player1_id] ?? m.player1_wins,
               player2_wins: matchScore[m.player2_id] ?? m.player2_wins,
               current_match_round: payload.round_number + 1,
             }
+            if (m.player3_id) updates.player3_wins = matchScore[m.player3_id] ?? m.player3_wins
+            return { ...m, ...updates }
           }),
         }
       }
@@ -253,9 +254,13 @@ const useGameStore = create(
   },
 
   matchFinished(payload) {
-    const { winner_id, loser_id, winner_name, match_id } = payload
+    const { winner_id, winner_name, match_id } = payload
+    // Support both 2-player (loser_id) and 3-player (losers array) matches
+    const allLoserIds = payload.losers
+      ? payload.losers.map(l => l.player_id)
+      : (payload.loser_id ? [payload.loser_id] : [])
     set((state) => {
-      const isLoser      = state.playerId === loser_id
+      const isLoser      = allLoserIds.includes(state.playerId)
       const isWinner     = state.playerId === winner_id
       const isInThisMatch = isLoser || isWinner
 

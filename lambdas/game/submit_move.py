@@ -14,16 +14,15 @@ events_client = boto3.client("events")
 
 
 def _submit_tournament(session_id, body, session):
-    """Handle move submission for a 1v1 tournament match."""
+    """Handle move submission for a tournament match (1v1 or 3-player)."""
     bracket = session.get("bracket", {})
     matches = bracket.get("matches", [])
 
-    # Find the player's active match
+    # Find the player's active match (check all player slots)
     my_match = None
     for m in matches:
-        if m.get("status") == "ACTIVE" and (
-            m.get("player1_id") == body.player_id or
-            m.get("player2_id") == body.player_id
+        if m.get("status") == "ACTIVE" and body.player_id in (
+            m.get("player1_id"), m.get("player2_id"), m.get("player3_id")
         ):
             my_match = m
             break
@@ -31,13 +30,9 @@ def _submit_tournament(session_id, body, session):
     if not my_match:
         return make_response(409, err("No active match found for this player"))
 
-    match_id    = my_match["match_id"]
-    match_round = int(my_match["current_match_round"])
-    opponent_id = (
-        my_match["player2_id"]
-        if my_match["player1_id"] == body.player_id
-        else my_match["player1_id"]
-    )
+    match_id     = my_match["match_id"]
+    match_round  = int(my_match["current_match_round"])
+    player_count = int(my_match.get("player_count", 2))
 
     pk = f"{session_id}#{match_id}#{match_round}"
 
@@ -57,7 +52,7 @@ def _submit_tournament(session_id, body, session):
     except moves_table.meta.client.exceptions.ConditionalCheckFailedException:
         return make_response(409, err("Move already submitted for this round"))
 
-    # Check if opponent has also submitted
+    # Check if all players in this match have submitted
     from boto3.dynamodb.conditions import Key
     import boto3 as _boto3
     import os
@@ -65,7 +60,7 @@ def _submit_tournament(session_id, body, session):
         KeyConditionExpression=Key("pk").eq(pk)
     )
     moves_count = len(resp.get("Items", []))
-    waiting_for = 2 - moves_count
+    waiting_for = player_count - moves_count
 
     broadcast(session_id, "MOVE_SUBMITTED", {
         "player_id": body.player_id,

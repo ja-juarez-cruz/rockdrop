@@ -109,7 +109,10 @@ Esta máquina de estados está en el store y todos los componentes la observan p
 
 - Todos en `TournamentPage`
 - Bracket eliminatorio generado completamente desde el inicio (todos los rounds visibles)
+- **Sin BYEs**: cuando n es impar, una sala del Round 1 tiene 3 jugadores (FFA sub-match); el resto son 1v1
+  - Ej. 5 jugadores → R1: [sala de 3, sala de 2] → R2: final 1v1
 - Cada match: primero en **3 rondas** dentro del match avanza (`wins_needed = 3`)
+- Match de 3 jugadores: resolución FFA por ronda (todos comparan contra todos); primero en llegar a 3 wins avanza
 - Brackets se actualizan en tiempo real vía WS
 
 ---
@@ -190,7 +193,8 @@ CHAMPION_DECLARED:
 - Árbol horizontal con todas las rondas visibles desde el inicio
 - Matches **PENDING**: borde punteado, nombres "Por definir" en gris
 - Matches **ACTIVE**: borde sólido, azul si es del jugador actual
-- Matches **COMPLETE**: ganador en verde, perdedor tachado
+- Matches **COMPLETE**: ganador en verde, perdedores tachados
+- Matches de **3 jugadores** (`player_count: 3`): card más alta con 3 filas de jugador
 - Líneas conectoras CSS (`border-right + border-bottom/top`) entre rondas
 - Scroll horizontal para brackets grandes
 - Badge 🏆 al final cuando hay campeón
@@ -242,10 +246,18 @@ const isMyRound = !payload.match_id || (state.playerId in results)
 if (!isMyRound) return { bracket, myMatch: updatedMyMatch }  // solo actualiza bracket display
 ```
 
-**`matchFinished`**: solo resetea myMatch/eliminatedBy para los jugadores del match:
+**`matchFinished`**: soporta 2 y 3 perdedores; solo resetea myMatch/eliminatedBy para los jugadores del match:
 ```js
-const isInThisMatch = isLoser || isWinner
+const allLoserIds = payload.losers
+  ? payload.losers.map(l => l.player_id)
+  : (payload.loser_id ? [payload.loser_id] : [])
+const isInThisMatch = allLoserIds.includes(state.playerId) || state.playerId === winner_id
 if (!isInThisMatch) return { bracket }  // otros matches no se interrumpen
+```
+
+**`_findMyMatch`**: busca al jugador en `player1_id`, `player2_id` y `player3_id`:
+```js
+m.player1_id === playerId || m.player2_id === playerId || m.player3_id === playerId
 ```
 
 ---

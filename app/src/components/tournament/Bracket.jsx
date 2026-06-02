@@ -11,11 +11,16 @@
  */
 
 // ── Layout constants ──────────────────────────────────────────────────────────
-const CARD_H   = 68   // px — height of each match card
-const SLOT_U   = 76   // px — slot unit for round 1 (card + gap)
+const CARD_H_2 = 68   // px — match card height for 2 players
+const CARD_H_3 = 96   // px — match card height for 3 players
+const SLOT_U   = 84   // px — slot unit for round 1 (card + gap), sized for 3-player cards
 const CARD_W   = 152  // px — width of each match card
 const CONN_W   = 20   // px — width of connector column between rounds
 const LINE_CLR = '#d4d4d8'  // zinc-300
+
+function cardHeight(match) {
+  return (match?.player3_id || match?.player_count === 3) ? CARD_H_3 : CARD_H_2
+}
 
 function slotHeight(round) {
   return SLOT_U * Math.pow(2, round - 1)
@@ -47,61 +52,69 @@ function PlayerRow({ name, wins, isWinner, isLoser, isMe, isTbd }) {
 }
 
 function MatchCard({ match, playerId }) {
-  const isPending = match.status === 'PENDING'
-  const isBye     = match.status === 'BYE'
-  const isActive  = match.status === 'ACTIVE'
+  const isPending  = match.status === 'PENDING'
+  const isActive   = match.status === 'ACTIVE'
   const isComplete = match.status === 'COMPLETE'
 
-  const isMe = match.player1_id === playerId || match.player2_id === playerId
+  const hasPlayer3 = !!(match.player3_id || (match.player_count === 3 && isPending))
+  const isMe = match.player1_id === playerId || match.player2_id === playerId || match.player3_id === playerId
 
   const p1Wins = Number(match.player1_wins ?? 0)
   const p2Wins = Number(match.player2_wins ?? 0)
+  const p3Wins = Number(match.player3_wins ?? 0)
 
   const p1Tbd = isPending || !match.player1_id
   const p2Tbd = isPending || !match.player2_id
+  const p3Tbd = isPending || !match.player3_id
 
-  const borderCls = isPending  ? 'border-dashed border-zinc-200' :
-                    isActive && isMe ? 'border-blue-400' :
-                    isActive   ? 'border-zinc-300' :
+  const borderCls = isPending          ? 'border-dashed border-zinc-200' :
+                    isActive && isMe   ? 'border-blue-400' :
+                    isActive           ? 'border-zinc-300' :
                     'border-zinc-200'
 
   const bgCls = isActive && isMe ? 'bg-blue-50' :
-                isPending         ? 'bg-zinc-50' :
+                isPending        ? 'bg-zinc-50' :
                 'bg-white'
+
+  const h = cardHeight(match)
 
   return (
     <div
-      style={{height: CARD_H, width: CARD_W}}
+      style={{height: h, width: CARD_W}}
       className={`border-2 rounded-xl flex flex-col justify-center overflow-hidden shrink-0 ${borderCls} ${bgCls}`}
     >
-      {isBye ? (
-        <div className="px-2 py-1">
-          <span className="text-[11px] font-medium text-zinc-700">
-            {match.player1_id ? match.player1_name : match.player2_name}
-          </span>
-          <span className="ml-1 text-[10px] text-zinc-400">Pase directo</span>
-        </div>
-      ) : (
-        <div className="flex flex-col justify-center px-0.5 py-0.5 gap-0.5">
-          <PlayerRow
-            name={match.player1_name}
-            wins={p1Wins}
-            isWinner={isComplete && match.winner_id === match.player1_id}
-            isLoser={isComplete && match.winner_id && match.winner_id !== match.player1_id}
-            isMe={match.player1_id === playerId}
-            isTbd={p1Tbd}
-          />
-          <div className="border-t border-zinc-100 mx-2" />
-          <PlayerRow
-            name={match.player2_name}
-            wins={p2Wins}
-            isWinner={isComplete && match.winner_id === match.player2_id}
-            isLoser={isComplete && match.winner_id && match.winner_id !== match.player2_id}
-            isMe={match.player2_id === playerId}
-            isTbd={p2Tbd}
-          />
-        </div>
-      )}
+      <div className="flex flex-col justify-center px-0.5 py-0.5 gap-0.5">
+        <PlayerRow
+          name={match.player1_name}
+          wins={p1Wins}
+          isWinner={isComplete && match.winner_id === match.player1_id}
+          isLoser={isComplete && match.winner_id && match.winner_id !== match.player1_id}
+          isMe={match.player1_id === playerId}
+          isTbd={p1Tbd}
+        />
+        <div className="border-t border-zinc-100 mx-2" />
+        <PlayerRow
+          name={match.player2_name}
+          wins={p2Wins}
+          isWinner={isComplete && match.winner_id === match.player2_id}
+          isLoser={isComplete && match.winner_id && match.winner_id !== match.player2_id}
+          isMe={match.player2_id === playerId}
+          isTbd={p2Tbd}
+        />
+        {hasPlayer3 && (
+          <>
+            <div className="border-t border-zinc-100 mx-2" />
+            <PlayerRow
+              name={match.player3_name}
+              wins={p3Wins}
+              isWinner={isComplete && match.winner_id === match.player3_id}
+              isLoser={isComplete && match.winner_id && match.winner_id !== match.player3_id}
+              isMe={match.player3_id === playerId}
+              isTbd={p3Tbd}
+            />
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -159,7 +172,9 @@ export default function Bracket({ bracket, playerId }) {
     ? matches.find(m => m.status === 'COMPLETE' && m.winner_id === champId && Number(m.tournament_round) === total_tournament_rounds)
     : null
   const champName = champMatch
-    ? (champMatch.winner_id === champMatch.player1_id ? champMatch.player1_name : champMatch.player2_name)
+    ? (['player1', 'player2', 'player3']
+        .map(p => ({ id: champMatch[`${p}_id`], name: champMatch[`${p}_name`] }))
+        .find(p => p.id === champId)?.name ?? null)
     : null
 
   return (

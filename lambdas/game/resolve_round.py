@@ -16,40 +16,6 @@ WINS_NEEDED      = 3  # Rondas para ganar un match en torneo (best-of-5)
 FFA_WINS_NEEDED  = 3  # Victorias de ronda para ganar en FFA
 
 
-def _build_next_round(players, tournament_round):
-    """Build bracket matches for the next tournament round."""
-    import math, random
-    n = len(players)
-    size = 1
-    while size < n:
-        size *= 2
-    shuffled = players[:]
-    random.shuffle(shuffled)
-    padded = shuffled + [None] * (size - n)
-    matches = []
-    for i in range(0, size, 2):
-        p1 = padded[i]
-        p2 = padded[i + 1]
-        mid = f"r{tournament_round}_m{i // 2 + 1}"
-        if p2 is None:
-            matches.append({
-                "match_id": mid, "tournament_round": tournament_round,
-                "player1_id": p1["player_id"], "player1_name": p1["display_name"],
-                "player1_wins": WINS_NEEDED,
-                "player2_id": None, "player2_name": None, "player2_wins": 0,
-                "current_match_round": 1, "status": "BYE", "winner_id": p1["player_id"],
-            })
-        else:
-            matches.append({
-                "match_id": mid, "tournament_round": tournament_round,
-                "player1_id": p1["player_id"], "player1_name": p1["display_name"],
-                "player1_wins": 0,
-                "player2_id": p2["player_id"], "player2_name": p2["display_name"],
-                "player2_wins": 0,
-                "current_match_round": 1, "status": "ACTIVE", "winner_id": None,
-            })
-    return {"matches": matches}
-
 
 def _rps(move_a, move_b):
     if move_a == move_b:
@@ -166,19 +132,6 @@ def _resolve_tournament_match(session_id, match_id, match_round):
         KeyConditionExpression=Key("pk").eq(pk)
     )
     moves = moves_resp.get("Items", [])
-    if len(moves) < 2:
-        logger.warning("Not enough moves", extra={"pk": pk})
-        return
-
-    a, b = moves[0], moves[1]
-    oc_a = _rps(a["move"], b["move"])
-    oc_b = "LOSE" if oc_a == "WIN" else ("WIN" if oc_a == "LOSE" else "TIE")
-
-    results = {
-        a["player_id"]: {"move": a["move"], "outcome": oc_a},
-        b["player_id"]: {"move": b["move"], "outcome": oc_b},
-    }
-    round_winner_id = a["player_id"] if oc_a == "WIN" else (b["player_id"] if oc_a == "LOSE" else None)
 
     # ── Load session and bracket ──────────────────────────────────────────────
     from db import get_session
@@ -188,23 +141,56 @@ def _resolve_tournament_match(session_id, match_id, match_round):
 
     bracket = session.get("bracket", {})
     matches = bracket.get("matches", [])
-    wins_needed = int(bracket.get("wins_needed", 2))
+    wins_needed = int(bracket.get("wins_needed", WINS_NEEDED))
 
-    # ── Find and update the match ─────────────────────────────────────────────
     my_match = next((m for m in matches if m["match_id"] == match_id), None)
     if not my_match:
         return
 
-    # Increment win counter for round winner (ties don't count)
-    if round_winner_id:
-        if my_match["player1_id"] == round_winner_id:
-            my_match["player1_wins"] = int(my_match.get("player1_wins", 0)) + 1
-        else:
-            my_match["player2_wins"] = int(my_match.get("player2_wins", 0)) + 1
+    player_count = int(my_match.get("player_count", 2))
 
+    if len(moves) < player_count:
+        logger.warning("Not enough moves", extra={"pk": pk, "got": len(moves), "need": player_count})
+        return
+
+    # ── Resolve round based on player count ───────────────────────────────────
+    if player_count == 2:
+        a, b = moves[0], moves[1]
+        oc_a = _rps(a["move"], b["move"])
+        oc_b = "LOSE" if oc_a == "WIN" else ("WIN" if oc_a == "LOSE" else "TIE")
+        results = {
+            a["player_id"]: {"move": a["move"], "outcome": oc_a},
+            b["player_id"]: {"move": b["move"], "outcome": oc_b},
+        }
+        round_winner_id = a["player_id"] if oc_a == "WIN" else (b["player_id"] if oc_a == "LOSE" else None)
+    else:
+        # 3-player FFA resolution within the tournament match
+        results = {m["player_id"]: {"move": m["move"], "wins": 0, "outcome": "TIE"} for m in moves}
+        for i, a in enumerate(moves):
+            for b in moves[i + 1:]:
+                oc = _rps(a["move"], b["move"])
+                if oc == "WIN":
+                    results[a["player_id"]]["wins"] += 1
+                elif oc == "LOSE":
+                    results[b["player_id"]]["wins"] += 1
+        max_w = max(r["wins"] for r in results.values())
+        winners_r = [pid for pid, r in results.items() if r["wins"] == max_w]
+        round_winner_id = winners_r[0] if len(winners_r) == 1 else None
+        for pid, r in results.items():
+            r["outcome"] = "WIN" if pid == round_winner_id else ("TIE" if r["wins"] == max_w else "LOSE")
+
+    # ── Increment win counter for round winner (ties don't count) ─────────────
+    if round_winner_id:
+        for k in range(1, player_count + 1):
+            if my_match.get(f"player{k}_id") == round_winner_id:
+                my_match[f"player{k}_wins"] = int(my_match.get(f"player{k}_wins", 0)) + 1
+                break
+
+    # ── Build match score ─────────────────────────────────────────────────────
     match_score = {
-        my_match["player1_id"]: int(my_match["player1_wins"]),
-        my_match["player2_id"]: int(my_match["player2_wins"]),
+        my_match[f"player{k}_id"]: int(my_match.get(f"player{k}_wins", 0))
+        for k in range(1, player_count + 1)
+        if my_match.get(f"player{k}_id")
     }
 
     # ── Broadcast round result ────────────────────────────────────────────────
@@ -216,26 +202,29 @@ def _resolve_tournament_match(session_id, match_id, match_round):
         "match_score": match_score,
     })
 
-    # ── Check if match is complete ────────────────────────────────────────────
-    p1_wins = int(my_match["player1_wins"])
-    p2_wins = int(my_match["player2_wins"])
-    match_winner_id = None
-
-    if p1_wins >= wins_needed:
-        match_winner_id = my_match["player1_id"]
-    elif p2_wins >= wins_needed:
-        match_winner_id = my_match["player2_id"]
+    # ── Check if match is complete (any player reached wins_needed) ───────────
+    match_winner_id = next(
+        (my_match[f"player{k}_id"]
+         for k in range(1, player_count + 1)
+         if my_match.get(f"player{k}_id") and int(my_match.get(f"player{k}_wins", 0)) >= wins_needed),
+        None,
+    )
 
     if match_winner_id:
-        match_loser_id = (
-            my_match["player2_id"]
-            if match_winner_id == my_match["player1_id"]
-            else my_match["player1_id"]
+        winner_name_str = next(
+            my_match[f"player{k}_name"]
+            for k in range(1, player_count + 1)
+            if my_match.get(f"player{k}_id") == match_winner_id
         )
-        my_match["status"] = "COMPLETE"
+        losers = [
+            {"player_id": my_match[f"player{k}_id"], "player_name": my_match[f"player{k}_name"]}
+            for k in range(1, player_count + 1)
+            if my_match.get(f"player{k}_id") and my_match[f"player{k}_id"] != match_winner_id
+        ]
+
+        my_match["status"]    = "COMPLETE"
         my_match["winner_id"] = match_winner_id
 
-        # Award a point to the match winner
         players_table.update_item(
             Key={"session_id": session_id, "player_id": match_winner_id},
             UpdateExpression="ADD score :one",
@@ -243,30 +232,28 @@ def _resolve_tournament_match(session_id, match_id, match_round):
         )
 
         broadcast(session_id, "MATCH_FINISHED", {
-            "match_id": match_id,
-            "winner_id": match_winner_id,
-            "loser_id": match_loser_id,
-            "winner_name": my_match["player1_name"] if match_winner_id == my_match["player1_id"] else my_match["player2_name"],
-            "loser_name":  my_match["player2_name"] if match_winner_id == my_match["player1_id"] else my_match["player1_name"],
-            "score": match_score,
+            "match_id":    match_id,
+            "winner_id":   match_winner_id,
+            "winner_name": winner_name_str,
+            "loser_id":    losers[0]["player_id"],    # backwards compat (first loser)
+            "loser_name":  losers[0]["player_name"],  # backwards compat (first loser)
+            "losers":      losers,                    # full list for 3-player matches
+            "score":       match_score,
         })
 
-        # ── Propagate winner into the pre-built downstream match ─────────────
-        winner_name_str = (my_match["player1_name"] if match_winner_id == my_match["player1_id"]
-                           else my_match["player2_name"])
+        # ── Propagate winner into the pre-built downstream match ──────────────
         _fill_winner_slot(match_id, match_winner_id, winner_name_str, matches)
 
         # ── Check if all matches in this tournament round are done ────────────
-        current_tr = int(bracket.get("current_tournament_round", 1))
+        current_tr    = int(bracket.get("current_tournament_round", 1))
         round_matches = [m for m in matches if int(m["tournament_round"]) == current_tr]
-        all_done = all(m["status"] in ("COMPLETE", "BYE") for m in round_matches)
+        all_done      = all(m["status"] == "COMPLETE" for m in round_matches)
 
         if all_done:
             total_rounds = int(bracket.get("total_tournament_rounds", 1))
             winners = [m["winner_id"] for m in round_matches if m["winner_id"]]
 
             if current_tr >= total_rounds:
-                # Champion!
                 champion_id = winners[0]
                 bracket["champion_id"] = champion_id
 
@@ -278,18 +265,19 @@ def _resolve_tournament_match(session_id, match_id, match_round):
                 )
 
                 champion_player = next(
-                    (m["player1_name"] if m["player1_id"] == champion_id else m["player2_name"]
-                     for m in round_matches if m["winner_id"] == champion_id),
+                    (my_match[f"player{k}_name"]
+                     for m in round_matches if m["winner_id"] == champion_id
+                     for k in range(1, int(m.get("player_count", 2)) + 1)
+                     if m.get(f"player{k}_id") == champion_id),
                     "Campeón"
                 )
                 broadcast(session_id, "CHAMPION_DECLARED", {
-                    "champion_id": champion_id,
+                    "champion_id":   champion_id,
                     "champion_name": champion_player,
                 })
                 return
 
             else:
-                # Advance to next round (already pre-built in bracket)
                 next_tr = current_tr + 1
                 bracket["current_tournament_round"] = next_tr
 
@@ -302,15 +290,13 @@ def _resolve_tournament_match(session_id, match_id, match_round):
                 next_round_matches = [m for m in matches if int(m["tournament_round"]) == next_tr]
                 broadcast(session_id, "TOURNAMENT_ROUND_COMPLETE", {
                     "next_tournament_round": next_tr,
-                    "new_matches": next_round_matches,
-                    "bracket": bracket,
+                    "new_matches":           next_round_matches,
+                    "bracket":               bracket,
                 })
                 return
     else:
-        # Match continues — increment match round
         my_match["current_match_round"] = match_round + 1
 
-    # Save updated bracket
     sessions_table.update_item(
         Key={"session_id": session_id, "sk": "METADATA"},
         UpdateExpression="SET bracket = :b",

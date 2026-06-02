@@ -86,7 +86,7 @@ rockdrop/
 {
   "wins_needed": 3,
   "current_tournament_round": 1,
-  "total_tournament_rounds": 3,
+  "total_tournament_rounds": 2,
   "champion_id": null,
   "matches": [
     {
@@ -94,8 +94,21 @@ rockdrop/
       "tournament_round": 1,
       "player1_id": "uuid", "player1_name": "Alice", "player1_wins": 0,
       "player2_id": "uuid", "player2_name": "Bob",   "player2_wins": 0,
+      "player3_id": "uuid", "player3_name": "Carol", "player3_wins": 0,
+      "player_count": 3,
       "current_match_round": 1,
-      "status": "ACTIVE | BYE | COMPLETE",
+      "status": "ACTIVE | COMPLETE",
+      "winner_id": null,
+      "source_matches": []
+    },
+    {
+      "match_id": "r1_m2",
+      "tournament_round": 1,
+      "player1_id": "uuid", "player1_name": "Dave",  "player1_wins": 0,
+      "player2_id": "uuid", "player2_name": "Eve",   "player2_wins": 0,
+      "player_count": 2,
+      "current_match_round": 1,
+      "status": "ACTIVE | COMPLETE",
       "winner_id": null,
       "source_matches": []
     },
@@ -104,6 +117,7 @@ rockdrop/
       "tournament_round": 2,
       "player1_id": null, "player1_name": "Ganador r1_m1", "player1_wins": 0,
       "player2_id": null, "player2_name": "Ganador r1_m2", "player2_wins": 0,
+      "player_count": 2,
       "current_match_round": 1,
       "status": "PENDING",
       "winner_id": null,
@@ -112,13 +126,15 @@ rockdrop/
   ]
 }
 ```
+*(Ejemplo con 5 jugadores: R1 tiene una sala de 3 y una de 2; R2 es la final 1v1.)*
 
 **Notas importantes sobre el bracket:**
 - El bracket completo (todos los rounds) se genera en `start_session` — los rounds futuros tienen `status: "PENDING"` y `source_matches`
-- Los BYEs propagan su ganador inmediatamente al siguiente slot
+- **Sin BYEs**: cuando el número de jugadores es impar, una sala del Round 1 recibe 3 jugadores (FFA sub-match) en vez de crear un BYE
+- `player_count` indica cuántos jugadores tiene el match (2 ó 3); los campos `player3_id / player3_name / player3_wins` solo existen cuando `player_count = 3`
 - `resolve_round` llena slots PENDING con ganadores (via `_fill_winner_slot`) en vez de construir rounds nuevos
-- El campo `source_matches` indica qué matches alimentan cada slot futuro
-- `wins_needed: 3` — primero en ganar 3 rondas de PPT avanza (best-of-5)
+- El campo `source_matches` indica qué matches alimentan cada slot futuro; puede tener 2 ó 3 entradas
+- `wins_needed: 3` — primero en ganar 3 rondas de PPT dentro del match avanza (best-of-5)
 
 ### `rockdrop-players-{env}`
 | Atributo | Tipo | Descripción |
@@ -199,7 +215,7 @@ Todos los mensajes tienen formato:
 | `PLAYER_DISCONNECTED` | WS $disconnect | `player_id`, `display_name` |
 | `MOVE_SUBMITTED` | Jugador envía movimiento | `player_id`, `match_id`?, `submitted_count`, `waiting_for` |
 | `ROUND_RESOLVED` | resolve_round termina | `round_number`, `match_id`?, `results`, `winner_id`, `match_score`? |
-| `MATCH_FINISHED` | Partido completo (TOURNAMENT) | `match_id`, `winner_id`, `loser_id`, `winner_name`, `loser_name`, `score` |
+| `MATCH_FINISHED` | Partido completo (TOURNAMENT) | `match_id`, `winner_id`, `winner_name`, `loser_id`*, `loser_name`*, `losers` (array), `score` |
 | `TOURNAMENT_ROUND_COMPLETE` | Todos los partidos de la ronda terminan | `next_tournament_round`, `new_matches`, `bracket` |
 | `CHAMPION_DECLARED` | Final del torneo | `champion_id`, `champion_name` |
 | `GAME_FINISHED` | Host cierra sesión (FFA) | `session_id`, `reason` |
@@ -212,7 +228,14 @@ Todos los mensajes tienen formato:
 | Jugadores | Modo | Descripción |
 |---|---|---|
 | 2–3 | `FREE_FOR_ALL` | Todos contra todos, primero en **3 victorias** gana |
-| 4+ | `TOURNAMENT` | Bracket eliminatorio, primero en **3 rondas** dentro de su match avanza |
+| 4+ | `TOURNAMENT` | Bracket eliminatorio sin BYEs; primero en **3 rondas** dentro de su match avanza |
+
+**Distribución de salas en TOURNAMENT (`_group_sizes`):**
+- **Nº de jugadores par**: todos los matches son 1v1 (grupos de 2)
+- **Nº de jugadores impar**: una sala recibe 3 jugadores (FFA sub-match), el resto son 1v1
+  - Ej. 5 jugadores → R1: [sala de 3, sala de 2] → R2: final 1v1
+  - Ej. 7 jugadores → R1: [sala de 3, sala de 2, sala de 2] → R2: [sala de 3] → campeón
+- **Sin BYEs**: este esquema elimina los pases directos en todas las configuraciones de jugadores
 
 ### Flujo FREE_FOR_ALL
 ```
@@ -230,25 +253,25 @@ Cada ronda:
 ```
 Host → POST /sessions/start
   └─ build_bracket(players) — genera TODOS los rounds upfront
-  └─ R1: matches ACTIVE/BYE con jugadores reales
+  └─ R1: matches ACTIVE con jugadores reales (2 ó 3 jugadores por sala)
   └─ R2+: matches PENDING con source_matches y nombres "Ganador r1_m1"
-  └─ BYEs propagan su ganador inmediatamente
   └─ broadcast GAME_STARTED {bracket completo}
 
-Cada match activo:
-  Jugador A → POST /game/move {match_id, round_number=current_match_round}
-  Jugador B → POST /game/move {match_id, round_number=current_match_round}
+Cada match activo (2 ó 3 jugadores):
+  Jugadores → POST /game/move {match_id, round_number=current_match_round}
+    └─ submit_move: espera player_count jugadores (2 ó 3) antes de disparar EventBridge
     └─ EventBridge AllMovesSubmitted {mode=TOURNAMENT, match_id}
-    └─ resolve_round: compara moves, actualiza player_X_wins en bracket
+    └─ resolve_round: 1v1 → comparación directa; 3 jugadores → lógica FFA (todos contra todos)
+    └─ actualiza player_X_wins en bracket
     └─ broadcast ROUND_RESOLVED {match_score}
 
   Si player_wins >= wins_needed (3):
     └─ match.status = COMPLETE, match.winner_id = ganador
     └─ _fill_winner_slot: llena el slot del próximo match PENDING
-    └─ si ambos slots llenos: ese match pasa a ACTIVE
-    └─ broadcast MATCH_FINISHED
+    └─ si todos los slots del próximo match están llenos: ese match pasa a ACTIVE
+    └─ broadcast MATCH_FINISHED {losers: [{player_id, player_name}]}
 
-    Si todos los matches del round están COMPLETE/BYE:
+    Si todos los matches del round están COMPLETE:
       Si current_round == total_rounds:
         └─ champion_id = ganador, session.status = FINISHED
         └─ broadcast CHAMPION_DECLARED
@@ -349,6 +372,8 @@ make plan-dev         # terraform plan dev
 - **`results` en ROUND_RESOLVED** es un objeto `{player_id: {move, outcome}}`, no array
 - **moves PK en TOURNAMENT**: `{session_id}#{match_id}#{match_round}` — `match_round` viene del bracket (no de `body.round_number`)
 - **`body.round_number`** en TOURNAMENT solo sirve para pasar validación Pydantic (≥ 1); el round real usa `my_match["current_match_round"]`
+- **`MATCH_FINISHED.losers`** es un array `[{player_id, player_name}]` con todos los eliminados del match; `loser_id` / `loser_name` se mantienen por compatibilidad hacia atrás (apuntan al primer perdedor)
+- **`player_count`** en cada match indica el número de jugadores (2 ó 3); `player3_id / player3_name / player3_wins` solo existen cuando `player_count = 3`
 - **CORS**: todos los responses pasan por `make_response()` del layer que incluye los headers. Si el Lambda crashea, API GW devuelve 502 sin headers CORS → el browser lanza como error de red
 - **`join_url` del QR**: `{WEB_APP_URL}/#/join?token={qr_token}` — el `#` es crítico para HashRouter
 - **BYEs en bracket**: `start_session._fill_slot` propaga el ganador del BYE a los slots PENDING inmediatamente al generar el bracket

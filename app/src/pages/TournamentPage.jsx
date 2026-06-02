@@ -88,31 +88,23 @@ export default function TournamentPage() {
   }, [gamePhase, myMatch, playerId, sessionId, currentRound, setMyMove, resetMove])
 
   // ── Derive match data ──────────────────────────────────────────────────────
-  const opponentId = myMatch
-    ? (myMatch.player1_id === playerId ? myMatch.player2_id : myMatch.player1_id)
-    : null
-
-  const opponentName = myMatch
-    ? (myMatch.player1_id === playerId ? myMatch.player2_name : myMatch.player1_name)
-    : null
-
-  const myWins = myMatch
-    ? (myMatch.player1_id === playerId ? myMatch.player1_wins : myMatch.player2_wins)
-    : 0
-
-  const opponentWins = myMatch
-    ? (myMatch.player1_id === playerId ? myMatch.player2_wins : myMatch.player1_wins)
-    : 0
-
   const winsNeeded = bracket?.wins_needed ?? 3
 
-  const opponentAsArray = opponentId && opponentName
-    ? [{ player_id: opponentId, display_name: opponentName }]
+  // Build player entries for the match (myself + all opponents)
+  const matchPlayers = myMatch
+    ? [
+        myMatch.player1_id && { player_id: myMatch.player1_id, display_name: myMatch.player1_name, wins: myMatch.player1_wins ?? 0 },
+        myMatch.player2_id && { player_id: myMatch.player2_id, display_name: myMatch.player2_name, wins: myMatch.player2_wins ?? 0 },
+        myMatch.player3_id && { player_id: myMatch.player3_id, display_name: myMatch.player3_name, wins: myMatch.player3_wins ?? 0 },
+      ].filter(Boolean)
     : []
 
-  const opponentSubmittedIds = opponentId && submittedPlayers.includes(opponentId)
-    ? [opponentId]
-    : []
+  const myMatchEntry   = matchPlayers.find(p => p.player_id === playerId) ?? { wins: 0 }
+  const myWins         = myMatchEntry.wins
+  const opponents      = matchPlayers.filter(p => p.player_id !== playerId)
+
+  const opponentAsArray      = opponents.map(o => ({ player_id: o.player_id, display_name: o.display_name }))
+  const opponentSubmittedIds = opponents.filter(o => submittedPlayers.includes(o.player_id)).map(o => o.player_id)
 
   // ── Loading ──────────────────────────────────────────────────────────────
   if (!session || !bracket) {
@@ -186,20 +178,28 @@ export default function TournamentPage() {
                 {players.find(p => p.player_id === playerId)?.display_name ?? 'Tú'}
               </p>
             </div>
-            <div className="flex items-center gap-3 px-4">
+            <div className="flex items-center gap-3 px-4 flex-wrap justify-center">
               <span className={`text-4xl font-extrabold tabular-nums ${myWins >= winsNeeded ? 'text-green-600' : 'text-zinc-900'}`}>
                 {myWins}
               </span>
-              <span className="text-xl text-zinc-300 font-light">–</span>
-              <span className={`text-4xl font-extrabold tabular-nums ${opponentWins >= winsNeeded ? 'text-red-500' : 'text-zinc-900'}`}>
-                {opponentWins}
-              </span>
+              {opponents.map((opp, idx) => (
+                <span key={opp.player_id} className="flex items-center gap-3">
+                  <span className="text-xl text-zinc-300 font-light">–</span>
+                  <span className={`text-4xl font-extrabold tabular-nums ${opp.wins >= winsNeeded ? 'text-red-500' : 'text-zinc-900'}`}>
+                    {opp.wins}
+                  </span>
+                </span>
+              ))}
             </div>
-            <div className="flex flex-col items-center flex-1">
-              <p className="text-xs text-zinc-400 font-semibold mb-1">Rival</p>
-              <p className="text-sm font-bold text-zinc-900 truncate max-w-[100px] text-center">
-                {opponentName}
-              </p>
+            <div className="flex flex-col items-end flex-1 gap-1">
+              {opponents.map(opp => (
+                <div key={opp.player_id} className="flex flex-col items-center">
+                  <p className="text-xs text-zinc-400 font-semibold">Rival</p>
+                  <p className="text-sm font-bold text-zinc-900 truncate max-w-[100px] text-center">
+                    {opp.display_name}
+                  </p>
+                </div>
+              ))}
             </div>
           </div>
 
