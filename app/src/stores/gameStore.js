@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+export const FFA_WINS_NEEDED = 3
+
 function _findMyMatch(bracket, playerId) {
   if (!bracket?.matches || !playerId) return null
   const tr = bracket.current_tournament_round ?? 1
@@ -13,12 +15,11 @@ function _findMyMatch(bracket, playerId) {
 /**
  * Single Zustand store for all RockDrop game state.
  *
- * Shape:
- *   session      — { session_id, status, mode, current_round, max_players, host_player_id }
- *   players      — array of { player_id, display_name, is_host, score, status }
- *   game         — currentRound, myMove, waitingFor, lastRoundResult
- *   tournament   — bracket
- *   ws           — wsStatus
+ * gamePhase drives the Observer pattern for UI rendering:
+ *   'selecting' → player is choosing a move
+ *   'waiting'   → move submitted, waiting for opponent(s)
+ *   'result'    → ROUND_RESOLVED received, showing overlay
+ *   'finished'  → game over (FFA win condition or GAME_FINISHED event)
  */
 
 const useGameStore = create((set, get) => ({
@@ -34,27 +35,25 @@ const useGameStore = create((set, get) => ({
   players: [],
 
   // ── Game ──────────────────────────────────────────────────────────────────
+  gamePhase: 'selecting',  // 'selecting' | 'waiting' | 'result' | 'finished'
   currentRound: 1,
   myMove: null,
   waitingFor: 0,
-  submittedPlayers: [],   // player_ids que ya tiraron esta ronda
+  submittedPlayers: [],
   lastRoundResult: null,
+  ffaWinnerId: null,
 
   // ── Tournament ────────────────────────────────────────────────────────────
-  bracket:          null,
-  myMatch:          null,   // match actual del jugador
-  eliminatedBy:     null,   // display_name del jugador que eliminó
-  championId:       null,
+  bracket:      null,
+  myMatch:      null,
+  eliminatedBy: null,
+  championId:   null,
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
   wsStatus: 'disconnected',
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
-  /**
-   * Called after successfully joining or creating a session.
-   * @param {{ player_id, session_id, display_name, ws_url, is_host?, qr_token? }} data
-   */
   setPlayer(data) {
     set({
       playerId:  data.player_id,
@@ -65,11 +64,6 @@ const useGameStore = create((set, get) => ({
     })
   },
 
-  /**
-   * Overwrite full session object (from GET /sessions/:id).
-   * Also syncs currentRound with session.current_round.
-   * @param {Object} session
-   */
   setSession(session) {
     set({
       session,
@@ -78,20 +72,12 @@ const useGameStore = create((set, get) => ({
     })
   },
 
-  /**
-   * Replace full player list (from GET /sessions/:id/players).
-   * @param {Array} players
-   */
   setPlayers(players) {
     set({ players })
   },
 
   // ── WS event handlers ─────────────────────────────────────────────────────
 
-  /**
-   * PLAYER_JOINED — add or update player in list.
-   * @param {{ player_id, display_name, total_players }} payload
-   */
   playerJoined(payload) {
     set((state) => {
       const exists = state.players.find(p => p.player_id === payload.player_id)
@@ -119,10 +105,6 @@ const useGameStore = create((set, get) => ({
     })
   },
 
-  /**
-   * PLAYER_DISCONNECTED — mark player as disconnected in list.
-   * @param {{ player_id, display_name }} payload
-   */
   playerDisconnected(payload) {
     set((state) => ({
       players: state.players.map(p =>
@@ -134,17 +116,19 @@ const useGameStore = create((set, get) => ({
   },
 
   /**
-   * Track the move the current client has submitted for this round.
-   * @param {'ROCK'|'PAPER'|'SCISSORS'} move
+   * Called when the player selects a move — transitions to 'waiting' phase.
    */
   setMyMove(move) {
-    set({ myMove: move })
+    set({ myMove: move, gamePhase: 'waiting' })
   },
 
   /**
-   * MOVE_SUBMITTED — update waiting count.
-   * @param {{ player_id, round_number, submitted_count, waiting_for }} payload
+   * Called on submit error — resets back to 'selecting' phase.
    */
+  resetMove() {
+    set({ myMove: null, gamePhase: 'selecting' })
+  },
+
   moveSubmitted(payload) {
     set((state) => ({
       waitingFor: payload.waiting_for,
@@ -155,20 +139,25 @@ const useGameStore = create((set, get) => ({
   },
 
   /**
-   * ROUND_RESOLVED — store round result, update leaderboard, advance round.
-   * @param {{ round_number, winner_id, is_tie, results, leaderboard }} payload
+   * ROUND_RESOLVED — stores result, updates scores, advances round.
+   * Transitions to 'result' phase, or 'finished' if FFA win condition met.
    */
   roundResolved(payload) {
     const results    = payload.results ?? {}
     const matchScore = payload.match_score ?? null
 
     set((state) => {
-      // Update player scores (FFA mode)
+      // Update player scores (FFA mode only; tournament handled by matchFinished)
       const updatedPlayers = state.players.map(p => {
         const r = results[p.player_id]
-        if (!r || payload.match_id) return p  // tournament scores handled by matchFinished
+        if (!r || payload.match_id) return p
         return r.outcome === 'WIN' ? { ...p, score: (p.score ?? 0) + 1 } : p
       })
+
+      // Check FFA win condition
+      const ffaWinner = !payload.match_id
+        ? updatedPlayers.find(p => (p.score ?? 0) >= FFA_WINS_NEEDED)
+        : null
 
       // Update match win counts in bracket for tournament
       let bracket = state.bracket
@@ -195,21 +184,23 @@ const useGameStore = create((set, get) => ({
         submittedPlayers: [],
         players:          updatedPlayers,
         bracket,
+        gamePhase:   ffaWinner ? 'finished' : 'result',
+        ffaWinnerId: ffaWinner?.player_id ?? state.ffaWinnerId,
       }
     })
   },
 
   /**
-   * Clear lastRoundResult (after overlay has been shown).
+   * Clears the round result overlay.
+   * If game is finished, keeps 'finished' phase so navigation triggers.
    */
   clearRoundResult() {
-    set({ lastRoundResult: null })
+    set((state) => ({
+      lastRoundResult: null,
+      gamePhase: state.gamePhase === 'finished' ? 'finished' : 'selecting',
+    }))
   },
 
-  /**
-   * BRACKET_UPDATED — merge new bracket data.
-   * @param {{ bracket }} payload
-   */
   bracketUpdated(payload) {
     const b = payload.bracket ?? payload
     set((state) => {
@@ -220,10 +211,10 @@ const useGameStore = create((set, get) => ({
   },
 
   matchFinished(payload) {
-    const { winner_id, loser_id, winner_name, loser_name, match_id } = payload
+    const { winner_id, loser_id, winner_name, match_id } = payload
     set((state) => {
-      const isLoser   = state.playerId === loser_id
-      const bracket   = state.bracket
+      const isLoser = state.playerId === loser_id
+      const bracket = state.bracket
         ? {
             ...state.bracket,
             matches: state.bracket.matches.map(m =>
@@ -236,11 +227,12 @@ const useGameStore = create((set, get) => ({
 
       return {
         bracket,
-        myMatch:      null,
-        eliminatedBy: isLoser ? winner_name : state.eliminatedBy,
-        currentRound: 1,
-        myMove:       null,
+        myMatch:          null,
+        eliminatedBy:     isLoser ? winner_name : state.eliminatedBy,
+        currentRound:     1,
+        myMove:           null,
         submittedPlayers: [],
+        gamePhase:        'selecting',
       }
     })
   },
@@ -250,11 +242,12 @@ const useGameStore = create((set, get) => ({
       const b = payload.bracket ?? state.bracket
       const myMatch = _findMyMatch(b, state.playerId)
       return {
-        bracket:      b,
+        bracket:          b,
         myMatch,
-        currentRound: 1,
-        myMove:       null,
+        currentRound:     1,
+        myMove:           null,
         submittedPlayers: [],
+        gamePhase:        'selecting',
       }
     })
   },
@@ -263,32 +256,23 @@ const useGameStore = create((set, get) => ({
     set((state) => ({
       championId: payload.champion_id,
       session: state.session ? { ...state.session, status: 'FINISHED' } : state.session,
+      gamePhase: 'finished',
     }))
   },
 
-  /**
-   * GAME_FINISHED — mark session as finished.
-   * @param {{ session_id, reason }} payload
-   */
-  gameFinished(payload) {
+  gameFinished() {
     set((state) => ({
       session: state.session
         ? { ...state.session, status: 'FINISHED' }
         : state.session,
+      gamePhase: 'finished',
     }))
   },
 
-  /**
-   * Update WebSocket connection status.
-   * @param {'connecting'|'connected'|'disconnected'|'error'} status
-   */
   setWsStatus(status) {
     set({ wsStatus: status })
   },
 
-  /**
-   * Full reset — used when leaving a session.
-   */
   reset() {
     set({
       sessionId:        null,
@@ -298,12 +282,17 @@ const useGameStore = create((set, get) => ({
       qrToken:          null,
       wsUrl:            null,
       players:          [],
+      gamePhase:        'selecting',
       currentRound:     1,
       myMove:           null,
       waitingFor:       0,
       submittedPlayers: [],
       lastRoundResult:  null,
+      ffaWinnerId:      null,
       bracket:          null,
+      myMatch:          null,
+      eliminatedBy:     null,
+      championId:       null,
       wsStatus:         'disconnected',
     })
   },

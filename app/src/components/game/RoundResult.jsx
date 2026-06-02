@@ -1,11 +1,12 @@
 /**
- * RoundResult — full-screen overlay shown after each round.
+ * RoundResult — full-screen overlay shown after each round resolves.
  *
  * Props:
- *   result    { round_number, winner_id, results: {player_id: {move,outcome}} }
- *   playerId  string   — current client's player_id
- *   players   array    — to resolve display_name
- *   onDismiss ()=>void
+ *   result      { round_number, winner_id, results: {player_id: {move,outcome}} }
+ *   playerId    string
+ *   players     array — to resolve display_name
+ *   onDismiss   ()=>void
+ *   isGameOver  boolean — true when this round ended the FFA match
  */
 
 import { useEffect } from 'react'
@@ -14,7 +15,7 @@ const MOVE_EMOJI = { ROCK: '🪨', PAPER: '📄', SCISSORS: '✂️' }
 const MOVE_LABEL = { ROCK: 'Piedra', PAPER: 'Papel', SCISSORS: 'Tijeras' }
 const DISMISS_MS = 5000
 
-export default function RoundResult({ result, playerId, players, onDismiss }) {
+export default function RoundResult({ result, playerId, players, onDismiss, isGameOver = false }) {
   useEffect(() => {
     const t = setTimeout(onDismiss, DISMISS_MS)
     return () => clearTimeout(t)
@@ -24,7 +25,6 @@ export default function RoundResult({ result, playerId, players, onDismiss }) {
 
   const { round_number, winner_id, results = {} } = result
 
-  // Convert results object → array
   const rows = Object.entries(results).map(([pid, data]) => ({
     player_id:    pid,
     move:         data.move,
@@ -34,15 +34,19 @@ export default function RoundResult({ result, playerId, players, onDismiss }) {
     isWinner:     pid === winner_id,
   }))
 
-  const myRow   = rows.find(r => r.isMe)
+  const myRow     = rows.find(r => r.isMe)
   const myOutcome = myRow?.outcome ?? 'TIE'
-  const isTie   = !winner_id
-  const isWin   = myOutcome === 'WIN'
+  const isTie     = !winner_id
+  const isWin     = myOutcome === 'WIN'
 
-  const bgColor     = isWin ? 'bg-green-50'  : isTie ? 'bg-zinc-50'   : 'bg-red-50'
-  const bigEmoji    = isWin ? '🏆'           : isTie ? '🤝'           : '😓'
-  const headline    = isWin ? '¡Ganaste!'     : isTie ? 'Empate'       : 'Perdiste'
-  const headColor   = isWin ? 'text-green-700': isTie ? 'text-zinc-600': 'text-red-600'
+  const bgColor   = isWin ? 'bg-green-50'   : isTie ? 'bg-zinc-50'    : 'bg-red-50'
+  const bigEmoji  = isGameOver
+    ? (isWin ? '🏆' : '🎮')
+    : (isWin ? '🏆' : isTie ? '🤝' : '😓')
+  const headline  = isGameOver
+    ? (isWin ? '¡Ganaste el juego!' : isTie ? 'Empate' : 'Perdiste el juego')
+    : (isWin ? '¡Ganaste!'          : isTie ? 'Empate' : 'Perdiste')
+  const headColor = isWin ? 'text-green-700' : isTie ? 'text-zinc-600' : 'text-red-600'
 
   const winnerName = rows.find(r => r.isWinner)?.display_name
 
@@ -54,22 +58,24 @@ export default function RoundResult({ result, playerId, players, onDismiss }) {
       aria-live="assertive"
       onClick={onDismiss}
     >
-      {/* Emoji + headline */}
       <span className="text-7xl mb-3 select-none" aria-hidden="true">{bigEmoji}</span>
+
       <p className="text-xs font-semibold text-zinc-400 uppercase tracking-widest mb-1">
-        Ronda {round_number}
+        {isGameOver ? 'Partido terminado' : `Ronda ${round_number}`}
       </p>
       <h2 className={`text-4xl font-extrabold mb-1 ${headColor}`}>{headline}</h2>
+
       {!isTie && winnerName && (
         <p className="text-sm text-zinc-500 mb-6">
-          {isWin ? 'Tú ganas esta ronda' : `${winnerName} gana esta ronda`}
+          {isWin
+            ? (isGameOver ? '¡Alcanzaste las victorias necesarias!' : 'Tú ganas esta ronda')
+            : `${winnerName} ${isGameOver ? 'ganó el partido' : 'gana esta ronda'}`}
         </p>
       )}
       {isTie && (
         <p className="text-sm text-zinc-500 mb-6">Nadie gana puntos</p>
       )}
 
-      {/* All players moves */}
       <div className="flex flex-wrap justify-center gap-3 w-full max-w-sm mb-6">
         {rows.map((r) => {
           const outcomeBg =
@@ -105,7 +111,9 @@ export default function RoundResult({ result, playerId, players, onDismiss }) {
         })}
       </div>
 
-      <p className="text-zinc-400 text-xs">Toca para continuar</p>
+      <p className="text-zinc-400 text-xs">
+        {isGameOver ? 'Toca para ver resultados finales' : 'Toca para continuar'}
+      </p>
     </div>
   )
 }
