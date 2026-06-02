@@ -150,36 +150,36 @@ const useGameStore = create((set, get) => ({
   },
 
   moveSubmitted(payload) {
-    set((state) => ({
-      waitingFor: payload.waiting_for,
-      submittedPlayers: payload.player_id
-        ? [...new Set([...state.submittedPlayers, payload.player_id])]
-        : state.submittedPlayers,
-    }))
+    set((state) => {
+      // For tournament: ignore submissions from other matches
+      const isMyMatch = !payload.match_id || payload.match_id === state.myMatch?.match_id
+      if (!isMyMatch) return {}
+
+      return {
+        waitingFor: payload.waiting_for,
+        submittedPlayers: payload.player_id
+          ? [...new Set([...state.submittedPlayers, payload.player_id])]
+          : state.submittedPlayers,
+      }
+    })
   },
 
   /**
    * ROUND_RESOLVED — stores result, updates scores, advances round.
-   * Transitions to 'result' phase, or 'finished' if FFA win condition met.
+   *
+   * For tournament: only show overlay / reset state for players IN this match.
+   * Players in other matches receive the bracket update only (scores display).
    */
   roundResolved(payload) {
     const results    = payload.results ?? {}
     const matchScore = payload.match_score ?? null
 
     set((state) => {
-      // Update player scores (FFA mode only; tournament handled by matchFinished)
-      const updatedPlayers = state.players.map(p => {
-        const r = results[p.player_id]
-        if (!r || payload.match_id) return p
-        return r.outcome === 'WIN' ? { ...p, score: (p.score ?? 0) + 1 } : p
-      })
+      // Is this player involved in the resolved match?
+      // FFA: always yes (no match_id). Tournament: only if player is in results.
+      const isMyRound = !payload.match_id || (state.playerId in results)
 
-      // Check FFA win condition
-      const ffaWinner = !payload.match_id
-        ? updatedPlayers.find(p => (p.score ?? 0) >= FFA_WINS_NEEDED)
-        : null
-
-      // Update match win counts in bracket for tournament
+      // Update bracket win counts so all players see live score progress
       let bracket = state.bracket
       if (matchScore && bracket) {
         bracket = {
@@ -195,6 +195,21 @@ const useGameStore = create((set, get) => ({
           }),
         }
       }
+
+      // Players in other tournament matches: only update the bracket display
+      if (!isMyRound) return { bracket }
+
+      // Update player scores (FFA only; tournament scores are handled by matchFinished)
+      const updatedPlayers = state.players.map(p => {
+        const r = results[p.player_id]
+        if (!r || payload.match_id) return p
+        return r.outcome === 'WIN' ? { ...p, score: (p.score ?? 0) + 1 } : p
+      })
+
+      // Check FFA win condition
+      const ffaWinner = !payload.match_id
+        ? updatedPlayers.find(p => (p.score ?? 0) >= FFA_WINS_NEEDED)
+        : null
 
       return {
         lastRoundResult:  payload,
@@ -233,7 +248,11 @@ const useGameStore = create((set, get) => ({
   matchFinished(payload) {
     const { winner_id, loser_id, winner_name, match_id } = payload
     set((state) => {
-      const isLoser = state.playerId === loser_id
+      const isLoser      = state.playerId === loser_id
+      const isWinner     = state.playerId === winner_id
+      const isInThisMatch = isLoser || isWinner
+
+      // Always update the bracket display for all players
       const bracket = state.bracket
         ? {
             ...state.bracket,
@@ -245,9 +264,12 @@ const useGameStore = create((set, get) => ({
           }
         : state.bracket
 
+      // Players in other matches: only update bracket display, leave gameplay alone
+      if (!isInThisMatch) return { bracket }
+
       return {
         bracket,
-        myMatch:          null,
+        myMatch:          null,   // winner waits for next; loser is eliminated
         eliminatedBy:     isLoser ? winner_name : state.eliminatedBy,
         currentRound:     1,
         myMove:           null,

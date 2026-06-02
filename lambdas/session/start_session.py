@@ -11,7 +11,7 @@ from models import ok, err, make_response
 
 logger = Logger()
 
-WINS_NEEDED = 2       # Rondas para ganar un match en torneo (best-of-3)
+WINS_NEEDED = 3       # Rondas para ganar un match en torneo (best-of-5)
 TOURNAMENT_MIN = 4    # Mínimo de jugadores para activar modo torneo
 
 

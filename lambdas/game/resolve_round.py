@@ -12,7 +12,7 @@ from ws import broadcast
 logger = Logger()
 
 BEATS            = {"ROCK": "SCISSORS", "SCISSORS": "PAPER", "PAPER": "ROCK"}
-WINS_NEEDED      = 2  # Rondas para ganar un match en torneo
+WINS_NEEDED      = 3  # Rondas para ganar un match en torneo (best-of-5)
 FFA_WINS_NEEDED  = 3  # Victorias de ronda para ganar en FFA
 
 
