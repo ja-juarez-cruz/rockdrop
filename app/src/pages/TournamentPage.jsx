@@ -2,30 +2,27 @@ import { useEffect, useCallback, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { submitMove, getSession, getPlayers } from '../lib/api.js'
 import useGameStore from '../stores/gameStore.js'
-import { useWebSocket } from '../hooks/useWebSocket.js'
 import MoveSelector from '../components/game/MoveSelector.jsx'
 import RoundResult from '../components/game/RoundResult.jsx'
+import DuelView from '../components/game/DuelView.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
 import Card from '../components/ui/Card.jsx'
 import Badge from '../components/ui/Badge.jsx'
-
-const MOVE_EMOJI = { ROCK: '🪨', PAPER: '📄', SCISSORS: '✂️' }
-const MOVE_LABEL = { ROCK: 'Piedra', PAPER: 'Papel', SCISSORS: 'Tijeras' }
 
 export default function TournamentPage() {
   const { sessionId } = useParams()
   const navigate      = useNavigate()
 
   const {
-    session, players, playerId, isHost, wsUrl,
+    session, players, playerId, isHost,
     bracket, myMatch,
-    currentRound, myMove, waitingFor, submittedPlayers,
+    gamePhase, currentRound, myMove, submittedPlayers,
     lastRoundResult, eliminatedBy, championId,
     setSession, setPlayers, bracketUpdated,
-    setMyMove, clearRoundResult,
+    setMyMove, resetMove, clearRoundResult,
   } = useGameStore()
 
-  useWebSocket(wsUrl, sessionId, playerId)
+  const [submitError, setSubmitError] = useState('')
 
   // ── Load on mount ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -34,44 +31,51 @@ export default function TournamentPage() {
         const [s, p] = await Promise.all([getSession(sessionId), getPlayers(sessionId)])
         setSession(s)
         setPlayers(p.players ?? p)
-        // Bracket comes from session on mount
         if (s.bracket) bracketUpdated({ bracket: s.bracket })
       } catch (e) { console.error('[Tournament] load error:', e) }
     }
     load()
   }, [sessionId])
 
-  // ── Navigate when champion declared or game finished ──────────────────────
+  // ── Navigate to finished — always wait for round result overlay to close ──
   useEffect(() => {
+    if (lastRoundResult) return   // let players see the final cards first
     if (championId || session?.status === 'FINISHED') {
       navigate(`/finished/${sessionId}`, { replace: true })
     }
-  }, [championId, session?.status])
+  }, [championId, session?.status, lastRoundResult])
 
-  // ── Navigate eliminated player ────────────────────────────────────────────
+  // ── Navigate eliminated player — also wait for round result overlay ───────
   useEffect(() => {
-    if (eliminatedBy) {
-      const t = setTimeout(() => navigate(`/finished/${sessionId}`, { replace: true }), 3500)
-      return () => clearTimeout(t)
-    }
-  }, [eliminatedBy])
+    if (!eliminatedBy || lastRoundResult) return
+    const t = setTimeout(() => navigate(`/finished/${sessionId}`, { replace: true }), 3000)
+    return () => clearTimeout(t)
+  }, [eliminatedBy, lastRoundResult])
 
   // ── Submit move ──────────────────────────────────────────────────────────
   const handleSelect = useCallback(async (move) => {
-    if (myMove || !myMatch) return
+    if (gamePhase !== 'selecting' || !myMatch) return
+    setSubmitError('')
     setMyMove(move)
     try {
       await submitMove(sessionId, {
         player_id:    playerId,
         move,
-        round_number: myMatch.current_match_round ?? currentRound,
+        round_number: Math.max(1, myMatch.current_match_round ?? currentRound),
         match_id:     myMatch.match_id,
       })
-    } catch { setMyMove(null) }
-  }, [myMove, myMatch, playerId, sessionId, currentRound, setMyMove])
+    } catch (err) {
+      setSubmitError(err.message || 'Error al enviar jugada. Inténtalo de nuevo.')
+      resetMove()
+    }
+  }, [gamePhase, myMatch, playerId, sessionId, currentRound, setMyMove, resetMove])
 
-  // ── Compute opponent ──────────────────────────────────────────────────────
-  const opponent = myMatch
+  // ── Derive match data ──────────────────────────────────────────────────────
+  const opponentId = myMatch
+    ? (myMatch.player1_id === playerId ? myMatch.player2_id : myMatch.player1_id)
+    : null
+
+  const opponentName = myMatch
     ? (myMatch.player1_id === playerId ? myMatch.player2_name : myMatch.player1_name)
     : null
 
@@ -83,32 +87,21 @@ export default function TournamentPage() {
     ? (myMatch.player1_id === playerId ? myMatch.player2_wins : myMatch.player1_wins)
     : 0
 
-  const winsNeeded  = bracket?.wins_needed ?? 2
-  const matchRound  = myMatch?.current_match_round ?? currentRound
+  const winsNeeded = bracket?.wins_needed ?? 2
 
-  const opponentId = myMatch
-    ? (myMatch.player1_id === playerId ? myMatch.player2_id : myMatch.player1_id)
-    : null
+  const opponentAsArray = opponentId && opponentName
+    ? [{ player_id: opponentId, display_name: opponentName }]
+    : []
 
-  const opponentSubmitted = opponentId
-    ? submittedPlayers.includes(opponentId)
-    : false
+  const opponentSubmittedIds = opponentId && submittedPlayers.includes(opponentId)
+    ? [opponentId]
+    : []
 
   // ── Loading ──────────────────────────────────────────────────────────────
   if (!session || !bracket) {
-    return <div className="min-h-dvh flex items-center justify-center"><Spinner size="lg" className="text-blue-600" /></div>
-  }
-
-  // ── Eliminated overlay ───────────────────────────────────────────────────
-  if (eliminatedBy) {
     return (
-      <div className="fixed inset-0 z-50 bg-red-50 flex flex-col items-center justify-center px-6">
-        <span className="text-7xl mb-4" aria-hidden="true">😓</span>
-        <h2 className="text-3xl font-extrabold text-red-600 mb-2">Eliminado</h2>
-        <p className="text-zinc-600 text-center mb-1">
-          <span className="font-semibold">{eliminatedBy}</span> ganó el partido
-        </p>
-        <p className="text-xs text-zinc-400 mt-4">Redirigiendo…</p>
+      <div className="min-h-dvh flex items-center justify-center">
+        <Spinner size="lg" className="text-blue-600" />
       </div>
     )
   }
@@ -116,7 +109,7 @@ export default function TournamentPage() {
   return (
     <main className="min-h-dvh bg-zinc-50 px-4 py-6 flex flex-col gap-5 max-w-lg mx-auto">
 
-      {/* Round result overlay */}
+      {/* Round result overlay — shown first so players see the final cards */}
       {lastRoundResult && (
         <RoundResult
           result={lastRoundResult}
@@ -126,12 +119,24 @@ export default function TournamentPage() {
         />
       )}
 
+      {/* Eliminated overlay — only after RoundResult has been dismissed */}
+      {eliminatedBy && !lastRoundResult && (
+        <div className="fixed inset-0 z-50 bg-red-50 flex flex-col items-center justify-center px-6 animate-fade-in">
+          <span className="text-7xl mb-4" aria-hidden="true">😓</span>
+          <h2 className="text-3xl font-extrabold text-red-600 mb-2">Eliminado</h2>
+          <p className="text-zinc-600 text-center mb-1">
+            <span className="font-semibold">{eliminatedBy}</span> ganó el partido
+          </p>
+          <p className="text-xs text-zinc-400 mt-4">Redirigiendo…</p>
+        </div>
+      )}
+
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs text-zinc-400 uppercase tracking-wider mb-0.5">Torneo</p>
           <h1 className="text-xl font-extrabold text-zinc-900">
-            {myMatch ? `Ronda ${matchRound} del partido` : 'Torneo en curso'}
+            {myMatch ? `Ronda ${myMatch.current_match_round ?? 1} del partido` : 'Torneo en curso'}
           </h1>
         </div>
         <Badge variant={myMatch ? 'connected' : 'waiting'}>
@@ -142,7 +147,7 @@ export default function TournamentPage() {
       {/* ── Marcador del partido ────────────────────────────────────────── */}
       {myMatch ? (
         <Card>
-          {/* VS header */}
+          {/* VS header with scores */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex flex-col items-center flex-1">
               <p className="text-xs text-blue-500 font-semibold mb-1">Tú</p>
@@ -150,7 +155,6 @@ export default function TournamentPage() {
                 {players.find(p => p.player_id === playerId)?.display_name ?? 'Tú'}
               </p>
             </div>
-            {/* Score */}
             <div className="flex items-center gap-3 px-4">
               <span className={`text-4xl font-extrabold tabular-nums ${myWins >= winsNeeded ? 'text-green-600' : 'text-zinc-900'}`}>
                 {myWins}
@@ -163,39 +167,34 @@ export default function TournamentPage() {
             <div className="flex flex-col items-center flex-1">
               <p className="text-xs text-zinc-400 font-semibold mb-1">Rival</p>
               <p className="text-sm font-bold text-zinc-900 truncate max-w-[100px] text-center">
-                {opponent}
+                {opponentName}
               </p>
             </div>
           </div>
 
-          {/* Progress: wins needed */}
           <p className="text-xs text-zinc-400 text-center mb-4">
             Primero en ganar {winsNeeded} rondas avanza
           </p>
 
-          {/* Move selector */}
-          {!myMove ? (
+          {/* Phase-based content */}
+          {gamePhase === 'selecting' && (
             <>
               <p className="text-sm font-semibold text-zinc-900 mb-3">Elige tu jugada</p>
-              <MoveSelector onSelect={handleSelect} selected={null} disabled={false} />
+              <MoveSelector onSelect={handleSelect} selected={null} />
+              {submitError && (
+                <p role="alert" className="text-xs text-red-500 mt-3 text-center">
+                  {submitError}
+                </p>
+              )}
             </>
-          ) : (
-            <div className="flex items-center gap-4">
-              <span className="text-5xl">{MOVE_EMOJI[myMove]}</span>
-              <div>
-                <p className="text-xs text-zinc-400 mb-0.5">Tu jugada</p>
-                <p className="text-lg font-bold text-zinc-900">{MOVE_LABEL[myMove]}</p>
-              </div>
-              <div className="ml-auto flex flex-col items-end gap-1.5">
-                <Badge variant="connected">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" aria-hidden="true" />
-                  Enviada
-                </Badge>
-                <span className={`text-xs font-medium ${opponentSubmitted ? 'text-green-600' : 'text-zinc-400'}`}>
-                  {opponentSubmitted ? `✓ ${opponent} listo` : `⏳ ${opponent} pensando…`}
-                </span>
-              </div>
-            </div>
+          )}
+
+          {gamePhase === 'waiting' && myMove && (
+            <DuelView
+              myMove={myMove}
+              opponents={opponentAsArray}
+              submittedOpponentIds={opponentSubmittedIds}
+            />
           )}
         </Card>
       ) : (
@@ -219,8 +218,8 @@ export default function TournamentPage() {
           {bracket.matches
             .filter(m => m.tournament_round === (bracket.current_tournament_round ?? 1))
             .map(m => {
-              const isMyMatch  = m.match_id === myMatch?.match_id
-              const isDone     = m.status === 'COMPLETE' || m.status === 'BYE'
+              const isMyMatch = m.match_id === myMatch?.match_id
+              const isDone    = m.status === 'COMPLETE' || m.status === 'BYE'
               return (
                 <div
                   key={m.match_id}

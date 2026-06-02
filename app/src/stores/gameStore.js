@@ -54,21 +54,41 @@ const useGameStore = create((set, get) => ({
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
+  /**
+   * Called after creating or joining a session.
+   * Resets ALL game state so stale scores/phase from a previous game don't leak.
+   */
   setPlayer(data) {
     set({
+      // Identity
       playerId:  data.player_id,
       sessionId: data.session_id,
       wsUrl:     data.ws_url,
       isHost:    data.is_host ?? false,
       qrToken:   data.qr_token ?? null,
+      // Full game-state reset for the new session
+      session:          null,
+      players:          [],
+      gamePhase:        'selecting',
+      currentRound:     1,
+      myMove:           null,
+      waitingFor:       0,
+      submittedPlayers: [],
+      lastRoundResult:  null,
+      ffaWinnerId:      null,
+      bracket:          null,
+      myMatch:          null,
+      eliminatedBy:     null,
+      championId:       null,
     })
   },
 
   setSession(session) {
     set({
       session,
-      sessionId:    session.session_id,
-      currentRound: session.current_round ?? get().currentRound,
+      sessionId: session.session_id,
+      // current_round is 0 during WAITING phase — clamp to minimum 1
+      currentRound: Math.max(1, session.current_round > 0 ? session.current_round : get().currentRound),
     })
   },
 

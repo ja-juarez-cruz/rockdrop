@@ -1,7 +1,7 @@
-import json
 import os
 import boto3
 from db import get_connected_players, mark_player_disconnected
+from models import json_dumps
 
 WS_API_ID = os.environ["WS_API_ID"]
 WS_STAGE = os.environ.get("WS_STAGE", "prod")
@@ -21,7 +21,7 @@ def _get_client():
 def broadcast(session_id: str, event_name: str, payload: dict, exclude_player_id: str | None = None) -> None:
     client = _get_client()
     players = get_connected_players(session_id)
-    message = json.dumps({"event": event_name, "payload": payload}).encode()
+    message = json_dumps({"event": event_name, "payload": payload}).encode()
 
     for player in players:
         if player.get("player_id") == exclude_player_id:
@@ -37,7 +37,7 @@ def broadcast(session_id: str, event_name: str, payload: dict, exclude_player_id
 
 def send_to_player(connection_id: str, event_name: str, payload: dict) -> None:
     client = _get_client()
-    message = json.dumps({"event": event_name, "payload": payload}).encode()
+    message = json_dumps({"event": event_name, "payload": payload}).encode()
     try:
         client.post_to_connection(ConnectionId=connection_id, Data=message)
     except client.exceptions.GoneException:

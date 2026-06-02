@@ -2,7 +2,6 @@ import { useEffect, useCallback, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { submitMove, getSession, getPlayers } from '../lib/api.js'
 import useGameStore, { FFA_WINS_NEEDED } from '../stores/gameStore.js'
-import { useWebSocket } from '../hooks/useWebSocket.js'
 import MoveSelector from '../components/game/MoveSelector.jsx'
 import RoundResult from '../components/game/RoundResult.jsx'
 import DuelView from '../components/game/DuelView.jsx'
@@ -10,38 +9,65 @@ import Leaderboard from '../components/game/Leaderboard.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
 import Card from '../components/ui/Card.jsx'
 
-// ── Score board (FFA 2-player) ────────────────────────────────────────────────
+// ── Score board — adapts to 2-player (face-off) or N-player (chip row) ────────
 
 function FfaScoreBoard({ players, playerId }) {
-  const me       = players.find(p => p.player_id === playerId)
-  const opponent = players.find(p => p.player_id !== playerId)
+  const connected = players.filter(p => p.status !== 'DISCONNECTED')
+  if (connected.length === 0) return null
 
-  if (!me || !opponent) return null
+  const sorted = [...connected].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
 
+  // 2-player: dramatic face-off layout
+  if (connected.length === 2) {
+    const me       = sorted.find(p => p.player_id === playerId)
+    const opponent = sorted.find(p => p.player_id !== playerId)
+    if (!me || !opponent) return null
+
+    return (
+      <div className="flex items-center justify-center rounded-2xl overflow-hidden border border-zinc-200 bg-zinc-900">
+        <div className="flex flex-col items-center px-6 py-4 flex-1">
+          <span className="text-3xl font-extrabold text-white tabular-nums leading-none">
+            {me.score ?? 0}
+          </span>
+          <span className="text-[11px] text-zinc-400 mt-1 font-medium">Tú</span>
+        </div>
+        <span className="text-sm font-bold text-zinc-600 px-2">—</span>
+        <div className="flex flex-col items-center px-6 py-4 flex-1">
+          <span className="text-3xl font-extrabold text-white tabular-nums leading-none">
+            {opponent.score ?? 0}
+          </span>
+          <span className="text-[11px] text-zinc-400 mt-1 font-medium truncate max-w-[80px] text-center">
+            {opponent.display_name}
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  // N-player: horizontal score chips
   return (
-    <div className="flex items-center justify-center gap-0 rounded-2xl overflow-hidden border border-zinc-200 bg-zinc-900">
-      {/* My score */}
-      <div className="flex flex-col items-center px-6 py-4 flex-1">
-        <span className="text-3xl font-extrabold text-white tabular-nums leading-none">
-          {me.score ?? 0}
-        </span>
-        <span className="text-[11px] text-zinc-400 mt-1 font-medium">Tú</span>
-      </div>
-
-      {/* Divider */}
-      <div className="flex flex-col items-center px-3">
-        <span className="text-sm font-bold text-zinc-600">—</span>
-      </div>
-
-      {/* Opponent score */}
-      <div className="flex flex-col items-center px-6 py-4 flex-1">
-        <span className="text-3xl font-extrabold text-white tabular-nums leading-none">
-          {opponent.score ?? 0}
-        </span>
-        <span className="text-[11px] text-zinc-400 mt-1 font-medium truncate max-w-[80px] text-center">
-          {opponent.display_name}
-        </span>
-      </div>
+    <div className="flex gap-2 overflow-x-auto pb-1">
+      {sorted.map(p => {
+        const isMe = p.player_id === playerId
+        return (
+          <div
+            key={p.player_id}
+            className={[
+              'flex flex-col items-center px-4 py-3 rounded-2xl border-2 min-w-[72px] shrink-0',
+              isMe
+                ? 'border-blue-400 bg-blue-50'
+                : 'border-zinc-200 bg-white',
+            ].join(' ')}
+          >
+            <span className={`text-2xl font-extrabold tabular-nums leading-none ${isMe ? 'text-blue-700' : 'text-zinc-900'}`}>
+              {p.score ?? 0}
+            </span>
+            <span className={`text-[10px] font-medium mt-1 truncate max-w-[56px] text-center ${isMe ? 'text-blue-500' : 'text-zinc-500'}`}>
+              {isMe ? 'Tú' : p.display_name}
+            </span>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -56,7 +82,6 @@ export default function GamePage() {
     session,
     players,
     playerId,
-    wsUrl,
     gamePhase,
     currentRound,
     myMove,
@@ -72,8 +97,6 @@ export default function GamePage() {
 
   const [submitError, setSubmitError] = useState('')
 
-  useWebSocket(wsUrl, sessionId, playerId)
-
   // ── Load on mount (fallback if store is empty) ───────────────────────────
   useEffect(() => {
     if (!session || session.session_id !== sessionId) {
@@ -83,19 +106,13 @@ export default function GamePage() {
     }
   }, [sessionId])
 
-  // ── Navigate when game ends (via WS GAME_FINISHED or FFA win condition) ──
+  // ── Navigate to finished — always wait for round result overlay to close ──
   useEffect(() => {
-    if (session?.status === 'FINISHED') {
+    if (lastRoundResult) return   // let players see the final cards first
+    if (gamePhase === 'finished' || session?.status === 'FINISHED') {
       navigate(`/finished/${sessionId}`, { replace: true })
     }
-  }, [session?.status])
-
-  // ── Navigate after result overlay is dismissed on game-over round ────────
-  useEffect(() => {
-    if (gamePhase === 'finished' && !lastRoundResult) {
-      navigate(`/finished/${sessionId}`, { replace: true })
-    }
-  }, [gamePhase, lastRoundResult])
+  }, [gamePhase, session?.status, lastRoundResult])
 
   // ── Submit move ──────────────────────────────────────────────────────────
   const handleSelectMove = useCallback(async (move) => {
@@ -103,7 +120,7 @@ export default function GamePage() {
     setSubmitError('')
     setMyMove(move)
     try {
-      await submitMove(sessionId, { player_id: playerId, move, round_number: currentRound })
+      await submitMove(sessionId, { player_id: playerId, move, round_number: Math.max(1, currentRound) })
     } catch (err) {
       setSubmitError(err.message || 'Error al enviar jugada. Inténtalo de nuevo.')
       resetMove()
@@ -119,8 +136,8 @@ export default function GamePage() {
     )
   }
 
-  const opponent = players.find(p => p.player_id !== playerId)
-  const connectedCount = players.filter(p => p.status === 'CONNECTED').length
+  const opponents      = players.filter(p => p.player_id !== playerId && p.status !== 'DISCONNECTED')
+  const connectedCount = players.filter(p => p.status !== 'DISCONNECTED').length
 
   return (
     <main className="min-h-dvh bg-zinc-50 px-4 py-6 flex flex-col gap-5 max-w-lg mx-auto">
@@ -164,7 +181,8 @@ export default function GamePage() {
         <Card>
           <DuelView
             myMove={myMove}
-            opponentName={opponent?.display_name ?? 'Rival'}
+            opponents={opponents}
+            submittedOpponentIds={submittedPlayers}
           />
         </Card>
       )}

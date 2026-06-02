@@ -12,7 +12,6 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getSession, getPlayers, startSession } from '../lib/api.js'
 import useGameStore from '../stores/gameStore.js'
-import { useWebSocket } from '../hooks/useWebSocket.js'
 import PlayerList from '../components/game/PlayerList.jsx'
 import QRDisplay from '../components/lobby/QRDisplay.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
@@ -32,13 +31,11 @@ export default function LobbyPage() {
     players,
     playerId,
     isHost,
-    wsUrl,
     qrToken,
+    wsStatus,
     setSession,
     setPlayers,
   } = useGameStore()
-
-  const { status: wsStatus } = useWebSocket(wsUrl, sessionId, playerId)
 
   const pollRef                       = useRef(null)
   const [starting, setStarting]       = useState(false)

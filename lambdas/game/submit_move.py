@@ -31,8 +31,8 @@ def _submit_tournament(session_id, body, session):
     if not my_match:
         return make_response(409, err("No active match found for this player"))
 
-    match_id = my_match["match_id"]
-    match_round = my_match["current_match_round"]
+    match_id    = my_match["match_id"]
+    match_round = int(my_match["current_match_round"])
     opponent_id = (
         my_match["player2_id"]
         if my_match["player1_id"] == body.player_id
