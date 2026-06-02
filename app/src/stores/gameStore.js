@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 export const FFA_WINS_NEEDED = 3
 
@@ -22,7 +23,9 @@ function _findMyMatch(bracket, playerId) {
  *   'finished'  → game over (FFA win condition or GAME_FINISHED event)
  */
 
-const useGameStore = create((set, get) => ({
+const useGameStore = create(
+  persist(
+    (set, get) => ({
   // ── Session ──────────────────────────────────────────────────────────────
   sessionId: null,
   session: null,
@@ -196,8 +199,11 @@ const useGameStore = create((set, get) => ({
         }
       }
 
-      // Players in other tournament matches: only update the bracket display
-      if (!isMyRound) return { bracket }
+      // Re-derive myMatch from the updated bracket so win counts stay current
+      const updatedMyMatch = bracket ? _findMyMatch(bracket, state.playerId) : state.myMatch
+
+      // Players in other tournament matches: only update bracket + myMatch display
+      if (!isMyRound) return { bracket, myMatch: updatedMyMatch }
 
       // Update player scores (FFA only; tournament scores are handled by matchFinished)
       const updatedPlayers = state.players.map(p => {
@@ -219,6 +225,7 @@ const useGameStore = create((set, get) => ({
         submittedPlayers: [],
         players:          updatedPlayers,
         bracket,
+        myMatch:          updatedMyMatch,
         gamePhase:   ffaWinner ? 'finished' : 'result',
         ffaWinnerId: ffaWinner?.player_id ?? state.ffaWinnerId,
       }
@@ -338,6 +345,19 @@ const useGameStore = create((set, get) => ({
       wsStatus:         'disconnected',
     })
   },
-}))
+}),
+{
+  name: 'rockdrop-session',
+  // Only persist the player identity — all game state is re-derived on mount
+  partialize: (state) => ({
+    playerId:  state.playerId,
+    sessionId: state.sessionId,
+    wsUrl:     state.wsUrl,
+    isHost:    state.isHost,
+    qrToken:   state.qrToken,
+  }),
+}
+)
+)
 
 export default useGameStore

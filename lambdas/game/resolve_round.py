@@ -136,6 +136,25 @@ def _resolve_ffa(session_id, round_number):
         logger.info("FFA champion declared", extra={"session_id": session_id, "champion_id": champion_id})
 
 
+# ── Tournament helpers ────────────────────────────────────────────────────────
+
+def _fill_winner_slot(from_match_id, winner_id, winner_name, all_matches):
+    """Fill the pre-built slot in the downstream match with the known winner."""
+    for m in all_matches:
+        if from_match_id not in m.get("source_matches", []):
+            continue
+        idx = m["source_matches"].index(from_match_id)
+        if idx == 0:
+            m["player1_id"]   = winner_id
+            m["player1_name"] = winner_name
+        else:
+            m["player2_id"]   = winner_id
+            m["player2_name"] = winner_name
+        if m["player1_id"] and m["player2_id"]:
+            m["status"] = "ACTIVE"
+        break
+
+
 # ── Tournament match ──────────────────────────────────────────────────────────
 
 def _resolve_tournament_match(session_id, match_id, match_round):
@@ -232,6 +251,11 @@ def _resolve_tournament_match(session_id, match_id, match_round):
             "score": match_score,
         })
 
+        # ── Propagate winner into the pre-built downstream match ─────────────
+        winner_name_str = (my_match["player1_name"] if match_winner_id == my_match["player1_id"]
+                           else my_match["player2_name"])
+        _fill_winner_slot(match_id, match_winner_id, winner_name_str, matches)
+
         # ── Check if all matches in this tournament round are done ────────────
         current_tr = int(bracket.get("current_tournament_round", 1))
         round_matches = [m for m in matches if int(m["tournament_round"]) == current_tr]
@@ -241,7 +265,7 @@ def _resolve_tournament_match(session_id, match_id, match_round):
             total_rounds = int(bracket.get("total_tournament_rounds", 1))
             winners = [m["winner_id"] for m in round_matches if m["winner_id"]]
 
-            if len(winners) == 1 or current_tr >= total_rounds:
+            if current_tr >= total_rounds:
                 # Champion!
                 champion_id = winners[0]
                 bracket["champion_id"] = champion_id
@@ -258,7 +282,6 @@ def _resolve_tournament_match(session_id, match_id, match_round):
                      for m in round_matches if m["winner_id"] == champion_id),
                     "Campeón"
                 )
-
                 broadcast(session_id, "CHAMPION_DECLARED", {
                     "champion_id": champion_id,
                     "champion_name": champion_player,
@@ -266,19 +289,9 @@ def _resolve_tournament_match(session_id, match_id, match_round):
                 return
 
             else:
-                # Set up next tournament round
+                # Advance to next round (already pre-built in bracket)
                 next_tr = current_tr + 1
-                winner_players = []
-                for wid in winners:
-                    for m in round_matches:
-                        if m["winner_id"] == wid:
-                            name = m["player1_name"] if wid == m["player1_id"] else m["player2_name"]
-                            winner_players.append({"player_id": wid, "display_name": name})
-                            break
-
-                new_bracket_data = _build_next_round(winner_players, next_tr)
                 bracket["current_tournament_round"] = next_tr
-                bracket["matches"] = matches + new_bracket_data["matches"]
 
                 sessions_table.update_item(
                     Key={"session_id": session_id, "sk": "METADATA"},
@@ -286,9 +299,10 @@ def _resolve_tournament_match(session_id, match_id, match_round):
                     ExpressionAttributeValues={":b": bracket, ":r": 1},
                 )
 
+                next_round_matches = [m for m in matches if int(m["tournament_round"]) == next_tr]
                 broadcast(session_id, "TOURNAMENT_ROUND_COMPLETE", {
                     "next_tournament_round": next_tr,
-                    "new_matches": new_bracket_data["matches"],
+                    "new_matches": next_round_matches,
                     "bracket": bracket,
                 })
                 return

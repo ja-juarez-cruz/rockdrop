@@ -122,8 +122,13 @@ export default function GamePage() {
     try {
       await submitMove(sessionId, { player_id: playerId, move, round_number: Math.max(1, currentRound) })
     } catch (err) {
-      setSubmitError(err.message || 'Error al enviar jugada. Inténtalo de nuevo.')
-      resetMove()
+      if (err.status === 409) {
+        // Move already submitted (e.g. page was refreshed mid-round).
+        // Stay in 'waiting' phase — round resolves when opponent submits.
+      } else {
+        setSubmitError(err.message || 'Error al enviar jugada. Inténtalo de nuevo.')
+        resetMove()
+      }
     }
   }, [gamePhase, currentRound, playerId, sessionId, setMyMove, resetMove])
 

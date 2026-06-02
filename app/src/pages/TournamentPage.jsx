@@ -5,6 +5,7 @@ import useGameStore from '../stores/gameStore.js'
 import MoveSelector from '../components/game/MoveSelector.jsx'
 import RoundResult from '../components/game/RoundResult.jsx'
 import DuelView from '../components/game/DuelView.jsx'
+import Bracket from '../components/tournament/Bracket.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
 import Card from '../components/ui/Card.jsx'
 import Badge from '../components/ui/Badge.jsx'
@@ -22,7 +23,9 @@ export default function TournamentPage() {
     setMyMove, resetMove, clearRoundResult,
   } = useGameStore()
 
-  const [submitError, setSubmitError] = useState('')
+  const [submitError,       setSubmitError]       = useState('')
+  // For the host: auto-dismiss the eliminated overlay then stay as spectator
+  const [hostDismissedElim, setHostDismissedElim] = useState(false)
 
   // ── Load on mount ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -37,20 +40,29 @@ export default function TournamentPage() {
     load()
   }, [sessionId])
 
-  // ── Navigate to finished — always wait for round result overlay to close ──
+  // ── Navigate to finished — wait for round result overlay to close first ──
   useEffect(() => {
-    if (lastRoundResult) return   // let players see the final cards first
+    if (lastRoundResult) return
     if (championId || session?.status === 'FINISHED') {
       navigate(`/finished/${sessionId}`, { replace: true })
     }
   }, [championId, session?.status, lastRoundResult])
 
-  // ── Navigate eliminated player — also wait for round result overlay ───────
+  // ── Eliminated: non-host navigates away; host auto-dismisses overlay ──────
   useEffect(() => {
-    if (!eliminatedBy || lastRoundResult) return
+    if (!eliminatedBy || lastRoundResult) {
+      setHostDismissedElim(false)
+      return
+    }
+    if (isHost) {
+      // Host stays as spectator — just dismiss the overlay after 3s
+      const t = setTimeout(() => setHostDismissedElim(true), 3000)
+      return () => clearTimeout(t)
+    }
+    // Non-host: navigate to finished after brief overlay
     const t = setTimeout(() => navigate(`/finished/${sessionId}`, { replace: true }), 3000)
     return () => clearTimeout(t)
-  }, [eliminatedBy, lastRoundResult])
+  }, [eliminatedBy, lastRoundResult, isHost])
 
   // ── Submit move ──────────────────────────────────────────────────────────
   const handleSelect = useCallback(async (move) => {
@@ -65,8 +77,13 @@ export default function TournamentPage() {
         match_id:     myMatch.match_id,
       })
     } catch (err) {
-      setSubmitError(err.message || 'Error al enviar jugada. Inténtalo de nuevo.')
-      resetMove()
+      if (err.status === 409) {
+        // Move already submitted (e.g. page was refreshed mid-round).
+        // Stay in 'waiting' phase — round resolves when opponent submits.
+      } else {
+        setSubmitError(err.message || 'Error al enviar jugada. Inténtalo de nuevo.')
+        resetMove()
+      }
     }
   }, [gamePhase, myMatch, playerId, sessionId, currentRound, setMyMove, resetMove])
 
@@ -87,7 +104,7 @@ export default function TournamentPage() {
     ? (myMatch.player1_id === playerId ? myMatch.player2_wins : myMatch.player1_wins)
     : 0
 
-  const winsNeeded = bracket?.wins_needed ?? 2
+  const winsNeeded = bracket?.wins_needed ?? 3
 
   const opponentAsArray = opponentId && opponentName
     ? [{ player_id: opponentId, display_name: opponentName }]
@@ -106,6 +123,12 @@ export default function TournamentPage() {
     )
   }
 
+  // Whether to show the eliminated overlay
+  const showEliminatedOverlay = !!eliminatedBy && !lastRoundResult &&
+    !(isHost && hostDismissedElim)
+
+  const currentTournamentRound = bracket.current_tournament_round ?? 1
+
   return (
     <main className="min-h-dvh bg-zinc-50 px-4 py-6 flex flex-col gap-5 max-w-lg mx-auto">
 
@@ -120,31 +143,39 @@ export default function TournamentPage() {
       )}
 
       {/* Eliminated overlay — only after RoundResult has been dismissed */}
-      {eliminatedBy && !lastRoundResult && (
+      {showEliminatedOverlay && (
         <div className="fixed inset-0 z-50 bg-red-50 flex flex-col items-center justify-center px-6 animate-fade-in">
           <span className="text-7xl mb-4" aria-hidden="true">😓</span>
           <h2 className="text-3xl font-extrabold text-red-600 mb-2">Eliminado</h2>
           <p className="text-zinc-600 text-center mb-1">
             <span className="font-semibold">{eliminatedBy}</span> ganó el partido
           </p>
-          <p className="text-xs text-zinc-400 mt-4">Redirigiendo…</p>
+          <p className="text-xs text-zinc-400 mt-4">
+            {isHost ? 'Continuarás viendo el torneo…' : 'Redirigiendo…'}
+          </p>
         </div>
       )}
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs text-zinc-400 uppercase tracking-wider mb-0.5">Torneo</p>
+          <p className="text-xs text-zinc-400 uppercase tracking-wider mb-0.5">
+            Torneo · Ronda {currentTournamentRound}
+          </p>
           <h1 className="text-xl font-extrabold text-zinc-900">
-            {myMatch ? `Ronda ${myMatch.current_match_round ?? 1} del partido` : 'Torneo en curso'}
+            {myMatch
+              ? `Partido — ronda ${myMatch.current_match_round ?? 1}`
+              : eliminatedBy
+                ? 'Modo espectador'
+                : 'Torneo en curso'}
           </h1>
         </div>
         <Badge variant={myMatch ? 'connected' : 'waiting'}>
-          {myMatch ? 'Tu turno' : 'Espera'}
+          {myMatch ? 'Tu turno' : eliminatedBy ? 'Eliminado' : 'Espera'}
         </Badge>
       </div>
 
-      {/* ── Marcador del partido ────────────────────────────────────────── */}
+      {/* ── Active match card ───────────────────────────────────────────── */}
       {myMatch ? (
         <Card>
           {/* VS header with scores */}
@@ -198,59 +229,41 @@ export default function TournamentPage() {
           )}
         </Card>
       ) : (
+        /* No active match: winner waiting or eliminated host spectating */
         <Card>
-          <div className="flex items-center gap-3 py-2">
-            <Spinner size="sm" className="text-blue-500 shrink-0" />
-            <div>
-              <p className="text-sm font-medium text-zinc-900">Esperando tu próximo rival…</p>
-              <p className="text-xs text-zinc-400 mt-0.5">Las otras partidas están en curso</p>
+          {eliminatedBy ? (
+            <div className="flex flex-col gap-1 py-2">
+              <p className="text-sm font-medium text-zinc-700">
+                Fuiste eliminado por{' '}
+                <span className="font-bold text-zinc-900">{eliminatedBy}</span>
+              </p>
+              <p className="text-xs text-zinc-400">
+                Sigue el torneo como espectador
+              </p>
             </div>
-          </div>
+          ) : (
+            <div className="flex items-center gap-3 py-2">
+              <Spinner size="sm" className="text-blue-500 shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-zinc-900">
+                  Esperando tu próximo rival…
+                </p>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Las otras partidas están en curso
+                </p>
+              </div>
+            </div>
+          )}
         </Card>
       )}
 
-      {/* ── Bracket resumen — solo para el host ─────────────────────────── */}
-      {isHost && (
-        <Card padding="sm">
-          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider px-1 mb-3">
-            Todas las partidas · Ronda {bracket.current_tournament_round ?? 1}
-          </p>
-          {bracket.matches
-            .filter(m => m.tournament_round === (bracket.current_tournament_round ?? 1))
-            .map(m => {
-              const isMyMatch = m.match_id === myMatch?.match_id
-              const isDone    = m.status === 'COMPLETE' || m.status === 'BYE'
-              return (
-                <div
-                  key={m.match_id}
-                  className={`flex items-center justify-between px-2 py-2.5 rounded-xl mb-1 ${
-                    isMyMatch ? 'bg-blue-50 border border-blue-200' : 'bg-white border border-zinc-100'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${isDone ? 'bg-zinc-300' : 'bg-green-400'}`} />
-                    <span className="text-sm text-zinc-800">
-                      {m.player1_name ?? 'BYE'}
-                      {' '}
-                      <span className="text-zinc-400 text-xs font-normal">vs</span>
-                      {' '}
-                      {m.player2_name ?? 'BYE'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-sm font-bold tabular-nums">
-                    <span className={m.winner_id === m.player1_id ? 'text-green-600' : 'text-zinc-700'}>
-                      {m.player1_wins}
-                    </span>
-                    <span className="text-zinc-300 font-light">–</span>
-                    <span className={m.winner_id === m.player2_id ? 'text-green-600' : 'text-zinc-700'}>
-                      {m.player2_wins}
-                    </span>
-                  </div>
-                </div>
-              )
-            })}
-        </Card>
-      )}
+      {/* ── Bracket — visible to all players ───────────────────────────── */}
+      <Card padding="sm">
+        <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider px-1 mb-2">
+          Bracket del torneo
+        </p>
+        <Bracket bracket={bracket} playerId={playerId} />
+      </Card>
 
     </main>
   )
