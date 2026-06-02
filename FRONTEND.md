@@ -1,6 +1,6 @@
 # RockDrop — Guía de integración frontend
 
-Stack: React 18 · Vite · Tailwind CSS · Zustand · HashRouter
+Stack: React 18 · Vite · Tailwind CSS · Zustand (persist) · HashRouter
 
 ---
 
@@ -12,16 +12,11 @@ Stack: React 18 · Vite · Tailwind CSS · Zustand · HashRouter
 | Dev (API REST) | `https://2kvig6o394.execute-api.us-east-1.amazonaws.com/dev` |
 | Dev (WebSocket) | `wss://{ws-id}.execute-api.us-east-1.amazonaws.com/dev` |
 
-Las URLs exactas están en los outputs de Terraform:
-```bash
-make plan-dev  # muestra rest_api_url y ws_api_url
-```
-
 ---
 
 ## Routing
 
-Usa `HashRouter` — las rutas son del tipo `https://domain.com/#/ruta`.
+`HashRouter` — rutas tipo `https://domain.com/#/ruta`.
 
 | Ruta | Página | Quién la ve |
 |---|---|---|
@@ -32,16 +27,14 @@ Usa `HashRouter` — las rutas son del tipo `https://domain.com/#/ruta`.
 | `/#/tournament/:sessionId` | `TournamentPage` | Todos (TOURNAMENT) |
 | `/#/finished/:sessionId` | `FinishedPage` | Todos (resultado final) |
 
-El `join_url` del QR **debe incluir el `#`**: `https://domain.com/#/join?token=xxx`.
-
 ---
 
 ## Autenticación
 
 | Actor | Mecanismo |
 |---|---|
-| Host (web) | `x-host-token` header en endpoints protegidos |
-| Guest | JWT `qr_token` en el body de `POST /players` — firmado HS256, expira 1h |
+| Host | `x-host-token` header en endpoints protegidos |
+| Guest | JWT `qr_token` en body de `POST /players` |
 
 El `host_player_id` se genera con `crypto.randomUUID()` y se persiste en `localStorage`.
 
@@ -55,234 +48,153 @@ VITE_API_URL=https://2kvig6o394.execute-api.us-east-1.amazonaws.com/dev
 VITE_WS_URL=wss://{ws-id}.execute-api.us-east-1.amazonaws.com/dev
 ```
 
-En desarrollo local (`npm run dev`), `API_URL = '/api'` — Vite proxea al API Gateway evitando CORS.  
-En producción (`npm run build`), `API_URL = VITE_API_URL`.
-
 ---
 
-## Formato de respuesta
+## Arquitectura de estado
 
-```json
-{ "data": { ... }, "error": null }   // éxito
-{ "data": null, "error": "mensaje" } // error
-```
+### WebSocket — Singleton de sesión (`App.jsx`)
 
-`api.js` hace unwrap de `response.data` y lanza `Error` con `response.error` en caso de fallo.
+El WebSocket **NO** vive en los componentes de página. Vive en `App.jsx` como `SessionWebSocket`, persistiendo a través de toda la navegación Lobby → Game → Tournament → Finished.
 
----
-
-## REST API
-
-### POST /sessions 🔒
-Crea sesión. Guarda `session_id`, `qr_token`, `ws_url` en store.
-
-```json
-// Request
-{ "host_player_id": "uuid", "display_name": "string", "mode": "FREE_FOR_ALL|TOURNAMENT", "max_players": 2-100 }
-
-// Response 201
-{ "data": { "session_id": "uuid", "qr_token": "eyJ...", "ws_url": "wss://...", "join_url": "https://.../#/join?token=..." } }
-```
-
-### POST /sessions/{id}/start 🔒
-Inicia el juego. Para TOURNAMENT genera el bracket automáticamente.
-
-```json
-// Request
-{ "host_player_id": "uuid" }
-
-// Response 200
-{ "data": { "session_id": "uuid", "status": "PLAYING", "bracket": { ... } } }
-// Emite WS: GAME_STARTED
-```
-
-### GET /sessions/{id}
-```json
-// Response 200
-{ "data": { "session_id": "uuid", "status": "WAITING|PLAYING|FINISHED", "mode": "string", "current_round": 1, "max_players": 30, "host_player_id": "uuid", "created_at": "ISO8601" } }
-```
-
-> `qr_token` y `join_url` están **excluidos** de esta respuesta.
-
-### DELETE /sessions/{id} 🔒
-Cierra sesión. Emite WS `GAME_FINISHED`.
-
-### POST /sessions/{id}/players
-Guest se une con el JWT del QR. Guarda `player_id` en store.
-
-```json
-// Request
-{ "display_name": "string", "token": "eyJ..." }
-
-// Response 201
-{ "data": { "player_id": "uuid", "session_id": "uuid", "display_name": "string", "ws_url": "wss://..." } }
-```
-
-| Código | Causa |
-|---|---|
-| `401` | Token inválido o expirado |
-| `403` | Token no corresponde a esta sesión |
-| `409` | Sesión llena o no en estado WAITING |
-
-### GET /sessions/{id}/players
-```json
-// Response 200
-{ "data": { "players": [{ "player_id": "uuid", "display_name": "string", "is_host": false, "score": 0, "status": "CONNECTED|DISCONNECTED" }], "count": 3 } }
-```
-
-### POST /sessions/{id}/game/move
-```json
-// Request FREE_FOR_ALL
-{ "player_id": "uuid", "move": "ROCK|PAPER|SCISSORS", "round_number": 1 }
-
-// Request TOURNAMENT
-{ "player_id": "uuid", "move": "ROCK|PAPER|SCISSORS", "round_number": 1, "match_id": "r1_m1" }
-
-// Response 200
-{ "data": { "accepted": true, "round_number": 1, "waiting_for": 1, "match_id": "r1_m1" } }
-```
-
-> Cuando `waiting_for = 0`, EventBridge dispara `resolve_round` → WS `ROUND_RESOLVED`.
-
-### GET /sessions/{id}/game/round/{n}
-```json
-// Response 200
-{ "data": { "round_number": "1", "results": { "uuid": { "move": "ROCK", "outcome": "WIN|LOSE|TIE" } }, "winner_id": "uuid|null", "resolved_at": "ISO8601" } }
-```
-
-> `results` es un **objeto** `{player_id: {...}}`, no array.
-
-### GET /sessions/{id}/tournament/bracket
-```json
-// Response 200
-{ "data": { "bracket": { "wins_needed": 2, "current_tournament_round": 1, "total_tournament_rounds": 2, "champion_id": null, "matches": [ ... ] } } }
-```
-
----
-
-## WebSocket
-
-### Conexión
-```
-wss://{ws-id}.execute-api.us-east-1.amazonaws.com/{env}
-  ?session_id={id}&player_id={id}
-```
-
-Al conectar → jugador pasa a `CONNECTED` en DynamoDB.  
-Al desconectar → `DISCONNECTED`, API GW cierra idle connections a los 10 min.
-
-### Formato mensajes
-```json
-{ "event": "NOMBRE_EVENTO", "payload": { ... } }
-```
-
-> **Crítico:** el campo es `event`, no `type`. `WebSocketManager.js` usa `msg.event || msg.type`.
-
-### Eventos servidor → cliente
-
-#### `GAME_STARTED`
-```json
-{ "session_id": "uuid", "mode": "TOURNAMENT", "bracket": { ... } }
-```
-Emitido cuando el host llama `start_session`. En `LobbyPage`, el polling detecta status PLAYING y navega a `/game` o `/tournament`.
-
-#### `PLAYER_JOINED`
-```json
-{ "player_id": "uuid", "display_name": "string", "total_players": 3 }
-```
-
-#### `PLAYER_DISCONNECTED`
-```json
-{ "player_id": "uuid", "display_name": "string" }
-```
-
-#### `MOVE_SUBMITTED`
-```json
-{ "player_id": "uuid", "match_id": "r1_m1", "round_number": 1, "submitted_count": 1, "waiting_for": 1 }
-```
-No revela el movimiento. `match_id` solo en TOURNAMENT.
-
-#### `ROUND_RESOLVED`
-```json
-{
-  "round_number": 1,
-  "match_id": "r1_m1",
-  "results": {
-    "uuid1": { "move": "ROCK",     "outcome": "WIN" },
-    "uuid2": { "move": "SCISSORS", "outcome": "LOSE" }
-  },
-  "winner_id": "uuid1",
-  "match_score": { "uuid1": 1, "uuid2": 0 }
+```jsx
+// App.jsx
+function SessionWebSocket() {
+  const wsUrl     = useGameStore(s => s.wsUrl)
+  const sessionId = useGameStore(s => s.sessionId)
+  const playerId  = useGameStore(s => s.playerId)
+  useWebSocket(wsUrl, sessionId, playerId)
+  return null
 }
 ```
-`match_id` y `match_score` solo en TOURNAMENT.
 
-#### `MATCH_FINISHED` (TOURNAMENT)
-```json
-{ "match_id": "r1_m1", "winner_id": "uuid", "loser_id": "uuid", "winner_name": "string", "loser_name": "string", "score": { "uuid1": 2, "uuid2": 1 } }
+**Por qué es crítico**: si el WS se crea/destruye en cada página, durante la transición Lobby→Game el backend marca al jugador como DISCONNECTED y recalcula `waiting_for` con menos jugadores — resolviendo rondas prematuramente en partidas de 3+ jugadores.
+
+### Zustand Store — `gameStore.js`
+
+**Persistencia en localStorage** (solo campos de identidad de sesión):
+```js
+persist(store, {
+  name: 'rockdrop-session',
+  partialize: (state) => ({
+    playerId, sessionId, wsUrl, isHost, qrToken
+  })
+})
 ```
-El loser navega a `/finished/:sessionId` con mensaje "Eliminado".
 
-#### `TOURNAMENT_ROUND_COMPLETE` (TOURNAMENT)
-```json
-{ "next_tournament_round": 2, "new_matches": [ ... ], "bracket": { ... } }
+Esto permite que al hacer **refresh** de página, el jugador recupere su sesión. Los campos de estado del juego (bracket, scores, etc.) se re-derivan de la API al montar cada página.
+
+### State machine `gamePhase` (Observer pattern)
+
+```
+'selecting' → (player picks card) → 'waiting'
+'waiting'   → (ROUND_RESOLVED)    → 'result'
+'result'    → (overlay dismissed) → 'selecting'
+any         → (game ends)         → 'finished'
 ```
 
-#### `CHAMPION_DECLARED` (TOURNAMENT)
-```json
-{ "champion_id": "uuid", "champion_name": "string" }
-```
-Todos navegan a `/finished/:sessionId`.
+Esta máquina de estados está en el store y todos los componentes la observan para decidir qué renderizar. Evita que el estado de UI dependa de `myMove` directamente.
 
-#### `GAME_FINISHED` (FREE_FOR_ALL)
-```json
-{ "session_id": "uuid", "reason": "host_closed" }
+---
+
+## Modos de juego
+
+### FREE_FOR_ALL (2–3 jugadores)
+
+- Todos en `GamePage`
+- Primero en **3 victorias** gana (`FFA_WINS_NEEDED = 3` en `gameStore.js`)
+- `roundResolved` detecta el ganador y transiciona `gamePhase → 'finished'`
+- El host no necesita cerrar la sesión — la navegación a `/finished` ocurre puramente en el frontend cuando alguien alcanza 3 wins
+
+### TOURNAMENT (4+ jugadores)
+
+- Todos en `TournamentPage`
+- Bracket eliminatorio generado completamente desde el inicio (todos los rounds visibles)
+- Cada match: primero en **3 rondas** dentro del match avanza (`wins_needed = 3`)
+- Brackets se actualizan en tiempo real vía WS
+
+---
+
+## Flujo de página — GamePage (FFA)
+
+```
+GamePage monta:
+  → si session nula: GET /sessions + GET /players
+  → SessionWebSocket ya está conectado (App nivel)
+
+gamePhase === 'selecting':
+  → MoveSelector + FfaScoreBoard + PlayerList
+
+gamePhase === 'waiting':
+  → DuelView (mi carta + cartas ocultas de rivales)
+  → submittedOpponentIds muestra quién ya tiró (✓ vs ❓)
+
+ROUND_RESOLVED recibido:
+  → roundResolved() → gamePhase = 'result' (o 'finished' si alguien llega a 3 wins)
+  → RoundResult overlay (5s o tap para cerrar, isGameOver si gamePhase='finished')
+
+gamePhase === 'finished' && !lastRoundResult:
+  → navigate('/finished/:sessionId')
+```
+
+**Manejo de 409 "already submitted"** (refresh mid-round):
+```js
+if (err.status === 409) {
+  // Ya enviamos antes del refresh — quedarse en 'waiting'
+} else {
+  setSubmitError(err.message)
+  resetMove()  // volver a 'selecting'
+}
 ```
 
 ---
 
-## Flujo Free For All
+## Flujo de página — TournamentPage
 
 ```
-Host: /host → crea sesión → /lobby/:id (muestra QR)
-Guest: escanea QR → /#/join?token=xxx → /lobby/:id
+TournamentPage monta:
+  → GET /sessions (incluye bracket), GET /players
+  → bracketUpdated() → _findMyMatch() → myMatch
+  → SessionWebSocket ya conectado
 
-LobbyPage:
-  - polling GET /sessions cada 3s mientras WAITING
-  - host ve botón "Iniciar partida" (mínimo 2 jugadores)
-  - WS: PLAYER_JOINED actualiza lista
-  - cuando session.status → PLAYING: navega a /game/:id
+gamePhase === 'selecting' && myMatch:
+  → Scoreboard del match (Tú X – Y Rival)
+  → MoveSelector
 
-GamePage:
-  - MoveSelector con 3 botones 🪨📄✂️
-  - al seleccionar: POST /game/move
-  - lista jugadores: ✓ Listo / ⏳ Pendiente (vía MOVE_SUBMITTED WS)
-  - ROUND_RESOLVED: overlay RoundResult (5s) con resultado de cada jugador
-  - GAME_FINISHED: navega a /finished/:id
+gamePhase === 'waiting' && myMatch:
+  → DuelView con carta del rival oculta + indicador si ya tiró
+
+ROUND_RESOLVED (solo si player está en ese match):
+  → roundResolved() → actualiza bracket + myMatch con nuevos wins
+
+MATCH_FINISHED (solo afecta a jugadores del match):
+  → matchFinished() → myMatch = null, eliminatedBy para el perdedor
+  → Jugadores de otros matches: solo actualiza bracket display
+
+Host eliminado:
+  → overlay "Eliminado" por 3s, luego desaparece → modo espectador
+  → Bracket visible, no navega a /finished hasta CHAMPION_DECLARED
+
+No-host eliminado:
+  → overlay "Eliminado" por 3s, luego navega a /finished
+
+TOURNAMENT_ROUND_COMPLETE:
+  → tournamentRoundComplete() → re-deriva myMatch del bracket actualizado
+
+CHAMPION_DECLARED:
+  → championDeclared() → gamePhase = 'finished'
+  → navega a /finished (esperando que overlay de último resultado se descarte)
 ```
 
-## Flujo Tournament
+### Bracket visual (`Bracket.jsx`)
 
-```
-Host: crea sesión mode=TOURNAMENT → lobby → "Iniciar partida"
-  start_session genera bracket automático → todos van a /tournament/:id
-
-TournamentPage:
-  - marcador: "Tú 1 — 0 Rival"
-  - "Primero en ganar 2 rondas avanza"
-  - MoveSelector (incluye match_id en submit)
-  - ROUND_RESOLVED: overlay con resultado de la ronda
-  - MATCH_FINISHED:
-      loser → overlay "Eliminado por X" → /finished/:id (3.5s)
-      winner → espera TOURNAMENT_ROUND_COMPLETE
-  - TOURNAMENT_ROUND_COMPLETE: nuevo match, marcador resetea
-  - CHAMPION_DECLARED: → /finished/:id
-
-FinishedPage:
-  - eliminado: "Fuiste eliminado — [ganador] ganó el partido"
-  - campeón:   "¡Eres el campeón!" 🏆
-  - otros:     ranking final
-```
+- Árbol horizontal con todas las rondas visibles desde el inicio
+- Matches **PENDING**: borde punteado, nombres "Por definir" en gris
+- Matches **ACTIVE**: borde sólido, azul si es del jugador actual
+- Matches **COMPLETE**: ganador en verde, perdedor tachado
+- Líneas conectoras CSS (`border-right + border-bottom/top`) entre rondas
+- Scroll horizontal para brackets grandes
+- Badge 🏆 al final cuando hay campeón
+- Visible para **todos los jugadores** (no solo el host)
 
 ---
 
@@ -290,22 +202,24 @@ FinishedPage:
 
 ```js
 {
-  // Sesión
+  // Identidad (persistido en localStorage)
   sessionId, session, playerId, isHost, qrToken, wsUrl,
 
   // Jugadores
   players,            // [{ player_id, display_name, is_host, score, status }]
 
-  // Juego
+  // Juego (state machine)
+  gamePhase,          // 'selecting' | 'waiting' | 'result' | 'finished'
   currentRound,       // número de ronda dentro del match (1, 2, 3...)
-  myMove,             // movimiento enviado esta ronda
-  waitingFor,         // cuántos jugadores faltan
-  submittedPlayers,   // [player_id] que ya tiraron esta ronda
+  myMove,             // movimiento enviado esta ronda (null = no enviado)
+  waitingFor,         // cuántos jugadores faltan (del mismo match)
+  submittedPlayers,   // [player_id] que ya tiraron esta ronda (del mismo match)
   lastRoundResult,    // payload de ROUND_RESOLVED (para overlay)
+  ffaWinnerId,        // player_id del ganador FFA (si aplica)
 
   // Torneo
-  bracket,            // objeto completo del bracket
-  myMatch,            // match activo del jugador actual
+  bracket,            // objeto completo del bracket (todos los rounds)
+  myMatch,            // match activo del jugador actual (re-derivado del bracket)
   eliminatedBy,       // display_name del jugador que eliminó (si aplica)
   championId,         // player_id del campeón (si aplica)
 
@@ -314,18 +228,48 @@ FinishedPage:
 }
 ```
 
+### Filtros críticos en el store (TOURNAMENT)
+
+**`moveSubmitted`**: solo actualiza `submittedPlayers`/`waitingFor` si el evento es del propio match:
+```js
+const isMyMatch = !payload.match_id || payload.match_id === state.myMatch?.match_id
+if (!isMyMatch) return {}
+```
+
+**`roundResolved`**: solo muestra overlay y resetea estado si el jugador está en ese match:
+```js
+const isMyRound = !payload.match_id || (state.playerId in results)
+if (!isMyRound) return { bracket, myMatch: updatedMyMatch }  // solo actualiza bracket display
+```
+
+**`matchFinished`**: solo resetea myMatch/eliminatedBy para los jugadores del match:
+```js
+const isInThisMatch = isLoser || isWinner
+if (!isInThisMatch) return { bracket }  // otros matches no se interrumpen
+```
+
 ---
 
 ## Consideraciones de implementación
 
-**JWT del QR:** decodificar con `atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))` — sin librería.
+**Refresh de página**: los campos de identidad (`playerId`, `sessionId`, `wsUrl`, `isHost`, `qrToken`) se persisten en `localStorage` via `zustand/middleware/persist`. Al montar la página, los efectos de carga re-fetchen la sesión y el bracket.
 
-**Hash routing y QR:** la URL del QR **debe** tener el formato `origin/#/join?token=xxx`. Sin el `#`, HashRouter no reconoce la ruta y redirige al catch-all `/host`.
+**WS singleton**: `SessionWebSocket` en App.jsx crea/destruye el WS cuando `wsUrl + sessionId + playerId` cambian. Se preserva durante navegación entre páginas.
 
-**Reconexión WebSocket:** `WebSocketManager` implementa exponential backoff (1→2→4…s, máx 5 reintentos). Al reconectar con mismo `player_id`, `$connect` actualiza el `connection_id` en DynamoDB.
+**JWT del QR**: `atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))` — sin librería.
 
-**No polling en GamePage:** todos los cambios de estado (movimientos, resultados, bracket) llegan por WebSocket. El único polling es en LobbyPage (cada 3s) para detectar el cambio WAITING→PLAYING.
+**Hash routing y QR**: URL del QR debe tener el formato `origin/#/join?token=xxx`.
 
-**Scores en tiempo real:** `ROUND_RESOLVED` incluye `results.outcome` → store suma +1 al ganador directamente sin REST. En TOURNAMENT los puntos del match se calculan de `match_score`.
+**Reconexión WS**: exponential backoff (1→2→4…s, máx 5 reintentos).
 
-**TTL sesión:** 1 hora desde creación. El cliente recibe 404 al intentar operar en sesión expirada.
+**No polling en GamePage/TournamentPage**: todos los cambios llegan por WebSocket. El único polling es en LobbyPage (cada 3s para detectar WAITING→PLAYING).
+
+**Scores en tiempo real**: `ROUND_RESOLVED` incluye `results.outcome` → FFA suma +1 al ganador. En TOURNAMENT los wins del match se actualizan via `match_score` → bracket → myMatch (re-derivado con `_findMyMatch`).
+
+**Navegación bloqueada por overlay**: ninguna navegación a `/finished` dispara mientras `lastRoundResult` esté seteado — garantiza que todos los jugadores vean las cartas de la última ronda antes de ir a resultados finales.
+
+**TTL sesión**: 1 hora desde creación.
+
+**FFA_WINS_NEEDED = 3** en `gameStore.js` (frontend) y `FFA_WINS_NEEDED = 3` en `resolve_round.py` (backend) — deben coincidir.
+
+**WINS_NEEDED = 3** en `start_session.py` y `resolve_round.py` — rondas de PPT para ganar un match de torneo.

@@ -9,10 +9,10 @@ Stack: AWS Lambda (Python 3.12) · DynamoDB · API Gateway REST + WebSocket · E
 ```
 rockdrop/
 ├── infra/
-│   ├── main.tf                        # Provider + backend S3 + módulos
-│   ├── variables.tf                   # aws_region, environment, ws_stage, web_bucket_name, web_app_url
-│   ├── outputs.tf                     # rest_api_url, ws_api_url, web_app_url, web_bucket_name, cloudfront_distribution_id
-│   ├── cloudfront.tf                  # S3 privado + CloudFront OAC
+│   ├── main.tf
+│   ├── variables.tf
+│   ├── outputs.tf
+│   ├── cloudfront.tf
 │   ├── backends/
 │   │   ├── dev.hcl
 │   │   └── prod.hcl
@@ -20,12 +20,12 @@ rockdrop/
 │   │   ├── dev.tfvars
 │   │   └── prod.tfvars.example
 │   ├── bootstrap/
-│   │   └── main.tf                    # S3 tfstate + DynamoDB locks + OIDC role (state local)
+│   │   └── main.tf
 │   └── modules/
 │       ├── dynamodb/main.tf
 │       ├── api_gateway_rest/
 │       │   ├── main.tf
-│       │   └── cors.tf                # OPTIONS mock con CORS headers en los 8 recursos
+│       │   └── cors.tf
 │       ├── api_gateway_ws/main.tf
 │       └── lambdas/main.tf
 ├── lambdas/
@@ -33,32 +33,31 @@ rockdrop/
 │   │   ├── create_session.py
 │   │   ├── get_session.py
 │   │   ├── close_session.py
-│   │   └── start_session.py           # POST /sessions/{id}/start — inicia juego + genera bracket si es TOURNAMENT
+│   │   └── start_session.py       # POST /sessions/{id}/start — modo auto por nº jugadores, genera bracket completo
 │   ├── player/
 │   │   ├── join_session.py
 │   │   └── get_players.py
 │   ├── game/
-│   │   ├── submit_move.py             # Soporta FFA y TOURNAMENT (match_id)
-│   │   ├── resolve_round.py           # FFA global + TOURNAMENT por partida con best-of-3
+│   │   ├── submit_move.py         # FFA y TOURNAMENT; convierte current_match_round a int
+│   │   ├── resolve_round.py       # FFA best-of-5; TOURNAMENT llena slots pre-generados
 │   │   └── get_round_result.py
 │   ├── tournament/
-│   │   ├── generate_bracket.py        # Deprecado — bracket ahora generado en start_session
-│   │   ├── advance_bracket.py         # Deprecado — avance automático en resolve_round
+│   │   ├── generate_bracket.py    # Deprecado
+│   │   ├── advance_bracket.py     # Deprecado
 │   │   └── get_bracket.py
 │   ├── websocket/
 │   │   ├── connect.py
 │   │   ├── disconnect.py
 │   │   └── broadcast.py
 │   └── layers/
-│       ├── requirements.txt           # aws-lambda-powertools, python-jose, pydantic
-│       ├── src/                       # Fuentes commiteados
+│       ├── requirements.txt
+│       ├── src/
 │       │   ├── auth.py
 │       │   ├── db.py
-│       │   ├── models.py
-│       │   └── ws.py
-│       └── common/                    # Build artifact (gitignoreado, generado por make build-layer)
-│           └── python/
-├── app/                               # Frontend React + Vite
+│       │   ├── models.py          # json_dumps con _DecimalEncoder
+│       │   └── ws.py              # broadcast usa json_dumps (soporta Decimal de DynamoDB)
+│       └── common/python/         # build artifact (gitignoreado)
+├── app/                           # Frontend React + Vite
 ├── .github/workflows/deploy-dev.yml
 ├── Makefile
 └── .gitignore
@@ -85,9 +84,9 @@ rockdrop/
 **Estructura `bracket` (TOURNAMENT):**
 ```json
 {
-  "wins_needed": 2,
+  "wins_needed": 3,
   "current_tournament_round": 1,
-  "total_tournament_rounds": 2,
+  "total_tournament_rounds": 3,
   "champion_id": null,
   "matches": [
     {
@@ -97,11 +96,29 @@ rockdrop/
       "player2_id": "uuid", "player2_name": "Bob",   "player2_wins": 0,
       "current_match_round": 1,
       "status": "ACTIVE | BYE | COMPLETE",
-      "winner_id": null
+      "winner_id": null,
+      "source_matches": []
+    },
+    {
+      "match_id": "r2_m1",
+      "tournament_round": 2,
+      "player1_id": null, "player1_name": "Ganador r1_m1", "player1_wins": 0,
+      "player2_id": null, "player2_name": "Ganador r1_m2", "player2_wins": 0,
+      "current_match_round": 1,
+      "status": "PENDING",
+      "winner_id": null,
+      "source_matches": ["r1_m1", "r1_m2"]
     }
   ]
 }
 ```
+
+**Notas importantes sobre el bracket:**
+- El bracket completo (todos los rounds) se genera en `start_session` — los rounds futuros tienen `status: "PENDING"` y `source_matches`
+- Los BYEs propagan su ganador inmediatamente al siguiente slot
+- `resolve_round` llena slots PENDING con ganadores (via `_fill_winner_slot`) en vez de construir rounds nuevos
+- El campo `source_matches` indica qué matches alimentan cada slot futuro
+- `wins_needed: 3` — primero en ganar 3 rondas de PPT avanza (best-of-5)
 
 ### `rockdrop-players-{env}`
 | Atributo | Tipo | Descripción |
@@ -143,33 +160,16 @@ Base URL: `https://{api-id}.execute-api.us-east-1.amazonaws.com/{env}`
 | Método | Path | Lambda | Notas |
 |---|---|---|---|
 | `POST` | `/sessions` | `create_session` | 🔒 Host |
-| `GET` | `/sessions/{id}` | `get_session` | |
+| `GET` | `/sessions/{id}` | `get_session` | Devuelve campo `bracket` si existe |
 | `DELETE` | `/sessions/{id}` | `close_session` | 🔒 Host |
-| `POST` | `/sessions/{id}/start` | `start_session` | 🔒 Host — transiciona a PLAYING, genera bracket si TOURNAMENT |
+| `POST` | `/sessions/{id}/start` | `start_session` | 🔒 Host — genera bracket completo |
 | `POST` | `/sessions/{id}/players` | `join_session` | JWT en body |
 | `GET` | `/sessions/{id}/players` | `get_players` | |
 | `POST` | `/sessions/{id}/game/move` | `submit_move` | |
 | `GET` | `/sessions/{id}/game/round/{n}` | `get_round_result` | |
-| `POST` | `/sessions/{id}/tournament/bracket` | `generate_bracket` | Deprecado |
 | `GET` | `/sessions/{id}/tournament/bracket` | `get_bracket` | |
-| `PUT` | `/sessions/{id}/tournament/bracket/advance` | `advance_bracket` | Deprecado |
 
 🔒 = requiere `x-host-token` header (validado en la Lambda)
-
-Todos los endpoints tienen método `OPTIONS` configurado con MOCK integration que retorna CORS headers.
-
-### Formato de respuesta estándar
-```json
-{ "data": { ... }, "error": null }
-{ "data": null,    "error": "mensaje de error" }
-```
-
-Todos los responses incluyen:
-```
-Access-Control-Allow-Origin: *
-Access-Control-Allow-Headers: Content-Type,x-host-token
-Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS
-```
 
 ---
 
@@ -194,7 +194,7 @@ Todos los mensajes tienen formato:
 
 | Evento | Cuándo | Payload clave |
 |---|---|---|
-| `GAME_STARTED` | Host llama start_session | `mode`, `bracket` (si TOURNAMENT) |
+| `GAME_STARTED` | Host llama start_session | `mode`, `bracket` (si TOURNAMENT, bracket completo con todos los rounds) |
 | `PLAYER_JOINED` | Guest hace join | `player_id`, `display_name`, `total_players` |
 | `PLAYER_DISCONNECTED` | WS $disconnect | `player_id`, `display_name` |
 | `MOVE_SUBMITTED` | Jugador envía movimiento | `player_id`, `match_id`?, `submitted_count`, `waiting_for` |
@@ -206,98 +206,95 @@ Todos los mensajes tienen formato:
 
 ---
 
-## Flujo TOURNAMENT detallado
+## Lógica de modos
 
+### Determinación automática de modo (`start_session.py`)
+| Jugadores | Modo | Descripción |
+|---|---|---|
+| 2–3 | `FREE_FOR_ALL` | Todos contra todos, primero en **3 victorias** gana |
+| 4+ | `TOURNAMENT` | Bracket eliminatorio, primero en **3 rondas** dentro de su match avanza |
+
+### Flujo FREE_FOR_ALL
 ```
-Host → POST /sessions          (mode=TOURNAMENT)
-Host → POST /sessions/{id}/start
-  └─ build_bracket(players, wins_needed=2)
-  └─ broadcast GAME_STARTED {bracket}
+Host → POST /sessions/start
+  └─ mode = FREE_FOR_ALL, broadcast GAME_STARTED
 
-Cada partida activa (ACTIVE matches):
-  Jugador A → POST /sessions/{id}/game/move {match_id, round_number}
-  Jugador B → POST /sessions/{id}/game/move {match_id, round_number}
+Cada ronda:
+  Todos los jugadores → POST /game/move {round_number}
+  EventBridge AllMovesSubmitted → resolve_round
+  └─ broadcast ROUND_RESOLVED {results, winner_id}
+  └─ si algún jugador llega a score ≥ 3: broadcast CHAMPION_DECLARED, session FINISHED
+```
+
+### Flujo TOURNAMENT detallado
+```
+Host → POST /sessions/start
+  └─ build_bracket(players) — genera TODOS los rounds upfront
+  └─ R1: matches ACTIVE/BYE con jugadores reales
+  └─ R2+: matches PENDING con source_matches y nombres "Ganador r1_m1"
+  └─ BYEs propagan su ganador inmediatamente
+  └─ broadcast GAME_STARTED {bracket completo}
+
+Cada match activo:
+  Jugador A → POST /game/move {match_id, round_number=current_match_round}
+  Jugador B → POST /game/move {match_id, round_number=current_match_round}
     └─ EventBridge AllMovesSubmitted {mode=TOURNAMENT, match_id}
-    └─ resolve_round: 1v1, actualiza player_X_wins en bracket
+    └─ resolve_round: compara moves, actualiza player_X_wins en bracket
     └─ broadcast ROUND_RESOLVED {match_score}
 
-  Si player_wins >= wins_needed:
-    └─ match.status = COMPLETE
-    └─ broadcast MATCH_FINISHED {winner_id, loser_id}
+  Si player_wins >= wins_needed (3):
+    └─ match.status = COMPLETE, match.winner_id = ganador
+    └─ _fill_winner_slot: llena el slot del próximo match PENDING
+    └─ si ambos slots llenos: ese match pasa a ACTIVE
+    └─ broadcast MATCH_FINISHED
 
-    Si todos los matches de la ronda están COMPLETE/BYE:
-      Si queda 1 jugador:
-        └─ session.status = FINISHED
+    Si todos los matches del round están COMPLETE/BYE:
+      Si current_round == total_rounds:
+        └─ champion_id = ganador, session.status = FINISHED
         └─ broadcast CHAMPION_DECLARED
-      Si quedan ≥ 2 jugadores:
-        └─ build next round matches
-        └─ broadcast TOURNAMENT_ROUND_COMPLETE {new_matches}
+      Si no:
+        └─ current_tournament_round++
+        └─ broadcast TOURNAMENT_ROUND_COMPLETE {bracket actualizado}
 ```
 
 ---
 
-## Lambda Layer
+## Correcciones críticas implementadas
 
-Fuentes en `lambdas/layers/src/`:
+### Bug: `json.dumps` no soporta `Decimal` de DynamoDB
+**Causa**: Los números almacenados en DynamoDB se deserializan como `Decimal` en Python. El `broadcast` en `ws.py` usaba `json.dumps` estándar que no soporta `Decimal`.
+
+**Fix**: `ws.py` importa y usa `json_dumps` de `models.py` que tiene `_DecimalEncoder`.
+
+```python
+# ws.py — antes
+message = json.dumps({"event": event_name, "payload": payload}).encode()
+
+# ws.py — después
+from models import json_dumps
+message = json_dumps({"event": event_name, "payload": payload}).encode()
+```
+
+Esto afectaba especialmente al tournament donde `current_match_round` (Decimal) se incluía en el payload de `broadcast`.
+
+### Bug: `current_round = 0` en submit_move
+`submit_move.py` lee `current_match_round` de DynamoDB como `Decimal`. Se convierte explícitamente a `int` para garantizar correcto formateo de PK:
+```python
+match_round = int(my_match["current_match_round"])
+```
+
+---
+
+## Lambda Layer (`lambdas/layers/src/`)
 
 | Archivo | Contenido |
 |---|---|
-| `auth.py` | `create_qr_token(session_id)`, `validate_qr_token(token)` — usa SSM `/rockdrop/{env}/JWT_SECRET` |
-| `db.py` | Tablas DynamoDB, helpers: `get_session`, `get_all_players`, `get_connected_players`, `get_moves_for_round` |
-| `models.py` | Pydantic models, `ok(data)`, `err(message)`, `make_response(status, body)`, `json_dumps(obj)` |
-| `ws.py` | `broadcast(session_id, event, payload)`, `send_to_player(connection_id, event, payload)` |
+| `auth.py` | `create_qr_token(session_id)`, `validate_qr_token(token)` |
+| `db.py` | Tablas DynamoDB, helpers de lectura |
+| `models.py` | Pydantic models, `json_dumps` con `_DecimalEncoder`, `ok()`, `err()`, `make_response()` |
+| `ws.py` | `broadcast()` usa `json_dumps` (soporta Decimal), `send_to_player()` |
 
-Build: `make build-layer` — pip install a `layers/common/python/` (gitignoreado) con `--platform manylinux2014_x86_64`.
-
----
-
-## Infraestructura
-
-### S3 + CloudFront
-- Bucket S3 privado con OAC (solo CloudFront puede leer)
-- CloudFront HTTPS → S3 → sirve `index.html` para rutas SPA
-- `custom_error_response`: 403/404 → `index.html` (200)
-- URL pública: `https://{id}.cloudfront.net` (output `web_app_url`)
-
-### Terraform variables
-| Variable | Dev | Prod |
-|---|---|---|
-| `environment` | `dev` | `prod` |
-| `web_bucket_name` | `rockdrop-web-dev` | `rockdrop-web` |
-| `web_app_url` | URL CloudFront dev | URL CloudFront prod |
-| `ws_stage` | `dev` | `prod` |
-
-### Bootstrap (una sola vez por cuenta)
-```bash
-cd infra/bootstrap && terraform init && terraform apply
-```
-Crea: S3 tfstate, DynamoDB locks, OIDC role `rockdrop-github-actions-deploy`.
-
----
-
-## Comandos principales
-
-```bash
-make sso-dev          # Login SSO jajc-dev
-make deploy-dev       # build-layer + terraform apply dev
-make sync-web-dev     # build React + S3 sync + CloudFront invalidation
-make plan-dev         # terraform plan dev
-```
-
----
-
-## CI/CD — GitHub Actions
-
-**Workflow:** `.github/workflows/deploy-dev.yml`  
-**Trigger:** push a rama `dev`
-
-Pasos:
-1. OIDC → rol `rockdrop-github-actions-deploy` en cuenta dev
-2. `pip3 install` del layer (manylinux2014_x86_64)
-3. `terraform apply` (infra + lambdas)
-4. Leer outputs `rest_api_url` + `ws_api_url` → `$GITHUB_ENV`
-5. `npm run build` con `VITE_API_URL` + `VITE_WS_URL` como env vars
-6. `aws s3 sync` + CloudFront invalidation
+Build: `make build-layer`
 
 ---
 
@@ -320,11 +317,38 @@ Secrets en SSM: `/rockdrop/{env}/JWT_SECRET`
 
 ---
 
+## Infraestructura
+
+- S3 privado + CloudFront OAC, custom_error_response 403/404 → index.html (SPA)
+- Terraform con backends por environment (`dev.hcl`, `prod.hcl`)
+
+## Comandos principales
+
+```bash
+make sso-dev          # Login SSO jajc-dev
+make deploy-dev       # build-layer + terraform apply dev
+make sync-web-dev     # build React + S3 sync + CloudFront invalidation
+make plan-dev         # terraform plan dev
+```
+
+## CI/CD
+
+**Workflow:** `.github/workflows/deploy-dev.yml` — push a rama `dev`
+
+1. OIDC → rol `rockdrop-github-actions-deploy`
+2. `pip3 install` del layer (manylinux2014_x86_64)
+3. `terraform apply`
+4. Leer outputs → `$GITHUB_ENV`
+5. `npm run build` con `VITE_API_URL` + `VITE_WS_URL`
+6. `aws s3 sync` + CloudFront invalidation
+
+---
+
 ## Notas de implementación
 
 - **`results` en ROUND_RESOLVED** es un objeto `{player_id: {move, outcome}}`, no array
-- **moves PK en TOURNAMENT**: `{session_id}#{match_id}#{match_round}` — no usar solo `round_number`
-- **`resolve_round`** recibe `mode` y `match_id` en el detalle de EventBridge para bifurcar FFA/TOURNAMENT
-- **`generate_bracket` y `advance_bracket`** son lambdas deprecadas — la lógica ahora vive en `start_session` y `resolve_round`
-- **CORS**: todos los responses pasan por `make_response()` del layer que incluye los headers automáticamente
-- **`join_url` del QR**: formato `{WEB_APP_URL}/#/join?token={qr_token}` — el `#` es crítico para HashRouter
+- **moves PK en TOURNAMENT**: `{session_id}#{match_id}#{match_round}` — `match_round` viene del bracket (no de `body.round_number`)
+- **`body.round_number`** en TOURNAMENT solo sirve para pasar validación Pydantic (≥ 1); el round real usa `my_match["current_match_round"]`
+- **CORS**: todos los responses pasan por `make_response()` del layer que incluye los headers. Si el Lambda crashea, API GW devuelve 502 sin headers CORS → el browser lanza como error de red
+- **`join_url` del QR**: `{WEB_APP_URL}/#/join?token={qr_token}` — el `#` es crítico para HashRouter
+- **BYEs en bracket**: `start_session._fill_slot` propaga el ganador del BYE a los slots PENDING inmediatamente al generar el bracket
