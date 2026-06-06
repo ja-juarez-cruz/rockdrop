@@ -1,3 +1,23 @@
+"""
+submit_move — POST /sessions/{session_id}/game/move
+
+Registra el movimiento de un jugador para la ronda activa y, cuando todos los
+jugadores del grupo han enviado su movimiento, dispara un evento EventBridge
+que activa resolve_round.
+
+Flujo:
+    1. Valida sesión (PLAYING) y modo (FREE_FOR_ALL | TOURNAMENT).
+    2. Persiste el movimiento con una escritura condicional idempotente.
+    3. Cuenta cuántos movimientos existen para la clave del round.
+    4. Broadcast MOVE_SUBMITTED (sin revelar el movimiento elegido).
+    5. Si waiting_for <= 0 → put_events AllMovesSubmitted → resolve_round.
+
+Tabla de movimientos (rockdrop-moves-{env}):
+    PK en FFA:        {session_id}#{round_number}
+    PK en TOURNAMENT: {session_id}#{match_id}#{match_round}
+    SK:               player_id
+"""
+
 import json
 import boto3
 from datetime import datetime
@@ -14,11 +34,27 @@ events_client = boto3.client("events")
 
 
 def _submit_tournament(session_id, body, session):
-    """Handle move submission for a tournament match (1v1 or 3-player)."""
+    """
+    Registra un movimiento en modo TOURNAMENT.
+
+    Busca el match ACTIVE donde el jugador participa, construye la PK compuesta
+    {session_id}#{match_id}#{match_round} y guarda el movimiento.  Cuando todos
+    los jugadores del match enviaron, dispara AllMovesSubmitted con el match_id
+    para que resolve_round pueda resolver únicamente ese partido sin tocar los
+    demás que están en curso en paralelo.
+
+    Args:
+        session_id: ID de la sesión.
+        body:       SubmitMoveRequest validado.
+        session:    Item de DynamoDB con el bracket completo.
+
+    Returns:
+        Respuesta API Gateway con { accepted, match_id, round_number, waiting_for }.
+    """
     bracket = session.get("bracket", {})
     matches = bracket.get("matches", [])
 
-    # Find the player's active match (check all player slots)
+    # Busca el match activo del jugador; player3_id cubre futuros formatos de 3 jugadores
     my_match = None
     for m in matches:
         if m.get("status") == "ACTIVE" and body.player_id in (
@@ -34,9 +70,9 @@ def _submit_tournament(session_id, body, session):
     match_round  = int(my_match["current_match_round"])
     player_count = int(my_match.get("player_count", 2))
 
+    # PK única por (sesión, match, ronda) — impide colisiones entre rondas del mismo match
     pk = f"{session_id}#{match_id}#{match_round}"
 
-    # Record the move
     try:
         moves_table.put_item(
             Item={
@@ -47,12 +83,14 @@ def _submit_tournament(session_id, body, session):
                 "round_number": match_round,
                 "match_id": match_id,
             },
+            # Garantiza idempotencia: si el jugador reenvía (retry de red), no sobreescribe
             ConditionExpression="attribute_not_exists(player_id)",
         )
     except moves_table.meta.client.exceptions.ConditionalCheckFailedException:
         return make_response(409, err("Move already submitted for this round"))
 
-    # Check if all players in this match have submitted
+    # Requiere query post-insert para obtener el conteo real; evita race condition
+    # si dos jugadores llegan casi simultáneamente y ambos calculan waiting_for = 1
     from boto3.dynamodb.conditions import Key
     import boto3 as _boto3
     import os
@@ -62,6 +100,7 @@ def _submit_tournament(session_id, body, session):
     moves_count = len(resp.get("Items", []))
     waiting_for = player_count - moves_count
 
+    # MOVE_SUBMITTED no incluye el movimiento elegido para no revelar la jugada antes de resolver
     broadcast(session_id, "MOVE_SUBMITTED", {
         "player_id": body.player_id,
         "match_id": match_id,
@@ -71,6 +110,8 @@ def _submit_tournament(session_id, body, session):
     })
 
     if waiting_for <= 0:
+        # EventBridge en lugar de invocación directa: desacopla submit_move de resolve_round
+        # y permite que la respuesta HTTP llegue al cliente antes de que empiece la resolución
         events_client.put_events(Entries=[{
             "Source": "rockdrop.game",
             "DetailType": "AllMovesSubmitted",
@@ -91,7 +132,22 @@ def _submit_tournament(session_id, body, session):
 
 
 def _submit_free_for_all(session_id, body, session):
-    """Handle move submission for a free-for-all session."""
+    """
+    Registra un movimiento en modo FREE_FOR_ALL.
+
+    Todos los jugadores conectados comparten la misma ronda global.  El conteo
+    de "quién falta" se calcula contra los jugadores con status CONNECTED para
+    no bloquear la ronda si alguien se desconectó.
+
+    Args:
+        session_id: ID de la sesión.
+        body:       SubmitMoveRequest validado (sin match_id).
+        session:    Item de DynamoDB de la sesión.
+
+    Returns:
+        Respuesta API Gateway con { accepted, round_number, waiting_for }.
+    """
+    # PK única por (sesión, ronda global) — todos los jugadores escriben al mismo PK
     pk = f"{session_id}#{body.round_number}"
 
     try:
@@ -108,6 +164,7 @@ def _submit_free_for_all(session_id, body, session):
     except moves_table.meta.client.exceptions.ConditionalCheckFailedException:
         return make_response(409, err("Move already submitted for this round"))
 
+    # Solo jugadores CONNECTED cuentan como "pendientes"; los DISCONNECTED no bloquean la ronda
     all_players = get_all_players(session_id)
     active = [p for p in all_players if p.get("status") == "CONNECTED"]
 
@@ -147,6 +204,12 @@ def _submit_free_for_all(session_id, body, session):
 
 @logger.inject_lambda_context
 def handler(event: dict, context: LambdaContext) -> dict:
+    """
+    Punto de entrada Lambda — POST /sessions/{session_id}/game/move.
+
+    Valida la sesión, determina el modo y delega a _submit_tournament
+    o _submit_free_for_all según corresponda.
+    """
     session_id = event.get("pathParameters", {}).get("session_id")
     if not session_id:
         return make_response(400, err("Missing session_id"))
