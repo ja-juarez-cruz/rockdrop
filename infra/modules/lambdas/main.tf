@@ -185,6 +185,9 @@ resource "aws_lambda_function" "functions" {
   handler          = "${each.key}.handler"
   runtime          = "python3.12"
   timeout          = each.value.timeout
+  # More memory = proportionally more CPU: shorter runs hold less of the
+  # account's concurrency (the dev account is capped at 10 concurrent executions)
+  memory_size      = 1024
   filename         = data.archive_file.lambda_zips[each.key].output_path
   source_code_hash = data.archive_file.lambda_zips[each.key].output_base64sha256
   layers           = [aws_lambda_layer_version.common.arn]

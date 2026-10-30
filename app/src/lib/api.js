@@ -6,6 +6,19 @@ import { API_URL } from './config.js'
  * - On success: returns response.data
  * - On error: throws Error with response.error message (or HTTP status text)
  */
+const MAX_ATTEMPTS = 4
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Transient failures worth retrying: Lambda throttling surfaces as API
+ * Gateway's own 500 { message: 'Internal server error' } (our handlers always
+ * answer with { error }), plus 429/502/503/504.
+ */
+function isTransient(status, payload) {
+  if ([429, 502, 503, 504].includes(status)) return true
+  return status === 500 && !payload?.error
+}
+
 async function request(method, path, body) {
   const url = `${API_URL}${path}`
   const options = {
@@ -17,16 +30,26 @@ async function request(method, path, body) {
   }
 
   let res
-  try {
-    res = await fetch(url, options)
-  } catch (networkErr) {
-    throw new Error('No se pudo conectar con el servidor. Verifica tu conexión.')
+  let payload
+  for (let attempt = 1; ; attempt++) {
+    payload = undefined
+    try {
+      res = await fetch(url, options)
+    } catch (networkErr) {
+      if (attempt < MAX_ATTEMPTS) { await sleep(300 * attempt + Math.random() * 300); continue }
+      throw new Error('No se pudo conectar con el servidor. Verifica tu conexión.')
+    }
+    try {
+      payload = await res.json()
+    } catch {
+      // Non-JSON body; handled below
+    }
+    if (!isTransient(res.status, payload) || attempt >= MAX_ATTEMPTS) break
+    // Jittered backoff: ~0.3–0.6s, 0.6–0.9s, 0.9–1.2s
+    await sleep(300 * attempt + Math.random() * 300)
   }
 
-  let payload
-  try {
-    payload = await res.json()
-  } catch {
+  if (payload === undefined) {
     if (!res.ok) {
       throw new Error(`Error ${res.status}: ${res.statusText}`)
     }

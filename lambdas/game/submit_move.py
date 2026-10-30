@@ -102,13 +102,15 @@ def _submit_tournament(session_id, body, session):
     waiting_for = player_count - moves_count
 
     # MOVE_SUBMITTED no incluye el movimiento elegido para no revelar la jugada antes de resolver
+    # Only the players of this match care about its submissions
+    match_player_ids = {my_match.get(f"player{k}_id") for k in range(1, player_count + 1)}
     broadcast(session_id, "MOVE_SUBMITTED", {
         "player_id": body.player_id,
         "match_id": match_id,
         "round_number": match_round,
         "submitted_count": moves_count,
         "waiting_for": max(waiting_for, 0),
-    })
+    }, only_player_ids=match_player_ids)
 
     if waiting_for <= 0:
         # EventBridge en lugar de invocación directa: desacopla submit_move de resolve_round
