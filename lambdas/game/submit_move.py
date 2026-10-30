@@ -95,7 +95,8 @@ def _submit_tournament(session_id, body, session):
     import boto3 as _boto3
     import os
     resp = _boto3.resource("dynamodb").Table(os.environ["MOVES_TABLE"]).query(
-        KeyConditionExpression=Key("pk").eq(pk)
+        KeyConditionExpression=Key("pk").eq(pk),
+        ConsistentRead=True,
     )
     moves_count = len(resp.get("Items", []))
     waiting_for = player_count - moves_count
@@ -172,7 +173,8 @@ def _submit_free_for_all(session_id, body, session):
     import boto3 as _boto3
     import os
     moves_resp = _boto3.resource("dynamodb").Table(os.environ["MOVES_TABLE"]).query(
-        KeyConditionExpression=Key("pk").eq(pk)
+        KeyConditionExpression=Key("pk").eq(pk),
+        ConsistentRead=True,
     )
     submitted = len(moves_resp.get("Items", []))
     waiting_for = len(active) - submitted
@@ -219,7 +221,8 @@ def handler(event: dict, context: LambdaContext) -> dict:
     except Exception as e:
         return make_response(400, err(str(e)))
 
-    session = get_session(session_id)
+    # Consistent read: the bracket may have just advanced current_match_round
+    session = get_session(session_id, consistent=True)
     if not session:
         return make_response(404, err("Session not found"))
 

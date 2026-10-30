@@ -1,4 +1,6 @@
 import json
+import random
+import time
 from datetime import datetime
 from decimal import Decimal
 
@@ -50,13 +52,21 @@ def _resolve_ffa(session_id, round_number):
 
     winner_id = winners[0] if len(winners) == 1 else None
 
-    rounds_table.put_item(Item={
-        "session_id": session_id,
-        "round_number": str(round_number),
-        "results": results,
-        "winner_id": winner_id,
-        "resolved_at": datetime.utcnow().isoformat() + "Z",
-    })
+    # Conditional put makes duplicate AllMovesSubmitted events a no-op
+    try:
+        rounds_table.put_item(
+            Item={
+                "session_id": session_id,
+                "round_number": str(round_number),
+                "results": results,
+                "winner_id": winner_id,
+                "resolved_at": datetime.utcnow().isoformat() + "Z",
+            },
+            ConditionExpression="attribute_not_exists(round_number)",
+        )
+    except rounds_table.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.info("FFA round already resolved", extra={"session_id": session_id, "round_number": round_number})
+        return
 
     # Actualizar puntaje del ganador y verificar si alcanzó FFA_WINS_NEEDED
     champion_id = None
@@ -119,36 +129,40 @@ def _fill_winner_slot(from_match_id, winner_id, winner_name, all_matches):
 
 
 # ── Tournament match ──────────────────────────────────────────────────────────
+#
+# The whole bracket lives in one session item and every match of a tournament
+# round resolves in parallel, so writes use optimistic locking on
+# bracket_version: read (consistent) → apply → conditional write → retry on
+# conflict.  Applying is idempotent (the match must still be ACTIVE on the same
+# current_match_round), so duplicate AllMovesSubmitted events and Lambda retries
+# are no-ops.  Broadcasts happen only after the write succeeds.
 
-def _resolve_tournament_match(session_id, match_id, match_round):
-    from boto3.dynamodb.conditions import Key
-    import boto3 as _boto3, os
+MAX_WRITE_ATTEMPTS = 20
 
-    pk = f"{session_id}#{match_id}#{match_round}"
-    moves_resp = _boto3.resource("dynamodb").Table(os.environ["MOVES_TABLE"]).query(
-        KeyConditionExpression=Key("pk").eq(pk)
-    )
-    moves = moves_resp.get("Items", [])
 
-    # ── Load session and bracket ──────────────────────────────────────────────
-    from db import get_session
-    session = get_session(session_id)
-    if not session:
-        return
+def _apply_match_round(bracket, match_id, match_round, moves):
+    """
+    Apply one resolved round of a tournament match to the bracket (in place).
 
-    bracket = session.get("bracket", {})
+    Returns the list of (event, payload) broadcasts plus the side effects to
+    persist, or None when the round was already applied or is not resolvable.
+    """
     matches = bracket.get("matches", [])
     wins_needed = int(bracket.get("wins_needed", WINS_NEEDED))
 
     my_match = next((m for m in matches if m["match_id"] == match_id), None)
     if not my_match:
-        return
+        return None
+    if my_match.get("status") != "ACTIVE" or int(my_match.get("current_match_round", 1)) != match_round:
+        return None
 
     player_count = int(my_match.get("player_count", 2))
+    match_player_ids = {my_match.get(f"player{k}_id") for k in range(1, player_count + 1)}
+    moves = [m for m in moves if m["player_id"] in match_player_ids]
 
     if len(moves) < player_count:
-        logger.warning("Not enough moves", extra={"pk": pk, "got": len(moves), "need": player_count})
-        return
+        logger.warning("Not enough moves", extra={"match_id": match_id, "got": len(moves), "need": player_count})
+        return None
 
     # ── Resolve round based on player count ───────────────────────────────────
     if player_count == 2:
@@ -162,7 +176,7 @@ def _resolve_tournament_match(session_id, match_id, match_round):
         round_winner_id = a["player_id"] if oc_a == "WIN" else (b["player_id"] if oc_a == "LOSE" else None)
     else:
         # 3-player FFA resolution within the tournament match
-        results = {m["player_id"]: {"move": m["move"], "wins": 0, "outcome": "TIE"} for m in moves}
+        results = {m["player_id"]: {"move": m["move"], "outcome": "TIE", "wins": 0} for m in moves}
         for i, a in enumerate(moves):
             for b in moves[i + 1:]:
                 oc = _rps(a["move"], b["move"])
@@ -190,14 +204,18 @@ def _resolve_tournament_match(session_id, match_id, match_round):
         if my_match.get(f"player{k}_id")
     }
 
-    # ── Broadcast round result ────────────────────────────────────────────────
-    broadcast(session_id, "ROUND_RESOLVED", {
-        "round_number": match_round,
-        "match_id": match_id,
-        "results": results,
-        "winner_id": round_winner_id,
-        "match_score": match_score,
-    })
+    outcome = {
+        "broadcasts":      [("ROUND_RESOLVED", {
+            "round_number": match_round,
+            "match_id":     match_id,
+            "results":      results,
+            "winner_id":    round_winner_id,
+            "match_score":  match_score,
+        })],
+        "match_winner_id": None,
+        "session_status":  None,
+        "current_round":   None,
+    }
 
     # ── Check if match is complete (any player reached wins_needed) ───────────
     match_winner_id = next(
@@ -207,98 +225,132 @@ def _resolve_tournament_match(session_id, match_id, match_round):
         None,
     )
 
-    if match_winner_id:
-        winner_name_str = next(
-            my_match[f"player{k}_name"]
-            for k in range(1, player_count + 1)
-            if my_match.get(f"player{k}_id") == match_winner_id
-        )
-        losers = [
-            {"player_id": my_match[f"player{k}_id"], "player_name": my_match[f"player{k}_name"]}
-            for k in range(1, player_count + 1)
-            if my_match.get(f"player{k}_id") and my_match[f"player{k}_id"] != match_winner_id
-        ]
+    if not match_winner_id:
+        my_match["current_match_round"] = match_round + 1
+        return outcome
 
-        my_match["status"]    = "COMPLETE"
-        my_match["winner_id"] = match_winner_id
+    winner_name_str = next(
+        my_match[f"player{k}_name"]
+        for k in range(1, player_count + 1)
+        if my_match.get(f"player{k}_id") == match_winner_id
+    )
+    losers = [
+        {"player_id": my_match[f"player{k}_id"], "player_name": my_match[f"player{k}_name"]}
+        for k in range(1, player_count + 1)
+        if my_match.get(f"player{k}_id") and my_match[f"player{k}_id"] != match_winner_id
+    ]
 
+    my_match["status"]    = "COMPLETE"
+    my_match["winner_id"] = match_winner_id
+    outcome["match_winner_id"] = match_winner_id
+
+    outcome["broadcasts"].append(("MATCH_FINISHED", {
+        "match_id":    match_id,
+        "winner_id":   match_winner_id,
+        "winner_name": winner_name_str,
+        "loser_id":    losers[0]["player_id"],    # backwards compat (first loser)
+        "loser_name":  losers[0]["player_name"],  # backwards compat (first loser)
+        "losers":      losers,                    # full list for 3-player matches
+        "score":       match_score,
+    }))
+
+    # ── Propagate winner into the pre-built downstream match ──────────────────
+    _fill_winner_slot(match_id, match_winner_id, winner_name_str, matches)
+
+    # ── Check if all matches in this tournament round are done ────────────────
+    current_tr    = int(bracket.get("current_tournament_round", 1))
+    round_matches = [m for m in matches if int(m["tournament_round"]) == current_tr]
+    if not all(m["status"] == "COMPLETE" for m in round_matches):
+        return outcome
+
+    total_rounds = int(bracket.get("total_tournament_rounds", 1))
+    if current_tr >= total_rounds:
+        bracket["champion_id"] = match_winner_id
+        outcome["session_status"] = "FINISHED"
+        outcome["broadcasts"].append(("CHAMPION_DECLARED", {
+            "champion_id":   match_winner_id,
+            "champion_name": winner_name_str,
+        }))
+    else:
+        next_tr = current_tr + 1
+        bracket["current_tournament_round"] = next_tr
+        outcome["current_round"] = 1
+        outcome["broadcasts"].append(("TOURNAMENT_ROUND_COMPLETE", {
+            "next_tournament_round": next_tr,
+            "new_matches":           [m for m in matches if int(m["tournament_round"]) == next_tr],
+            "bracket":               bracket,
+        }))
+    return outcome
+
+
+def _save_bracket(session_id, bracket, version, outcome):
+    """Conditional write: only succeeds if nobody else wrote since we read."""
+    sets   = ["bracket = :b", "bracket_version = :nv"]
+    values = {":b": bracket, ":v": version, ":nv": version + 1}
+    names  = {}
+    if outcome["session_status"]:
+        sets.append("#s = :s")
+        names["#s"]  = "status"
+        values[":s"] = outcome["session_status"]
+    if outcome["current_round"] is not None:
+        sets.append("current_round = :r")
+        values[":r"] = outcome["current_round"]
+
+    kwargs = {
+        "Key": {"session_id": session_id, "sk": "METADATA"},
+        "UpdateExpression": "SET " + ", ".join(sets),
+        "ConditionExpression": "attribute_not_exists(bracket_version) OR bracket_version = :v",
+        "ExpressionAttributeValues": values,
+    }
+    if names:
+        kwargs["ExpressionAttributeNames"] = names
+    sessions_table.update_item(**kwargs)
+
+
+def _resolve_tournament_match(session_id, match_id, match_round):
+    from boto3.dynamodb.conditions import Key
+    import boto3 as _boto3, os
+
+    pk = f"{session_id}#{match_id}#{match_round}"
+    moves = _boto3.resource("dynamodb").Table(os.environ["MOVES_TABLE"]).query(
+        KeyConditionExpression=Key("pk").eq(pk),
+        ConsistentRead=True,
+    ).get("Items", [])
+
+    for attempt in range(MAX_WRITE_ATTEMPTS):
+        session = sessions_table.get_item(
+            Key={"session_id": session_id, "sk": "METADATA"},
+            ConsistentRead=True,
+        ).get("Item")
+        if not session:
+            return
+
+        bracket = session.get("bracket", {})
+        version = int(session.get("bracket_version", 0))
+        outcome = _apply_match_round(bracket, match_id, match_round, moves)
+        if outcome is None:
+            logger.info("Round already applied or not resolvable", extra={"pk": pk})
+            return
+
+        try:
+            _save_bracket(session_id, bracket, version, outcome)
+            break
+        except sessions_table.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.info("Bracket write conflict, retrying", extra={"pk": pk, "attempt": attempt + 1})
+            time.sleep(min(0.05 * (2 ** attempt), 0.4) * random.random())
+    else:
+        # Let Lambda's async retry run us again; applying is idempotent.
+        raise RuntimeError(f"Bracket write conflict persisted after {MAX_WRITE_ATTEMPTS} attempts ({pk})")
+
+    if outcome["match_winner_id"]:
         players_table.update_item(
-            Key={"session_id": session_id, "player_id": match_winner_id},
+            Key={"session_id": session_id, "player_id": outcome["match_winner_id"]},
             UpdateExpression="ADD score :one",
             ExpressionAttributeValues={":one": 1},
         )
 
-        broadcast(session_id, "MATCH_FINISHED", {
-            "match_id":    match_id,
-            "winner_id":   match_winner_id,
-            "winner_name": winner_name_str,
-            "loser_id":    losers[0]["player_id"],    # backwards compat (first loser)
-            "loser_name":  losers[0]["player_name"],  # backwards compat (first loser)
-            "losers":      losers,                    # full list for 3-player matches
-            "score":       match_score,
-        })
-
-        # ── Propagate winner into the pre-built downstream match ──────────────
-        _fill_winner_slot(match_id, match_winner_id, winner_name_str, matches)
-
-        # ── Check if all matches in this tournament round are done ────────────
-        current_tr    = int(bracket.get("current_tournament_round", 1))
-        round_matches = [m for m in matches if int(m["tournament_round"]) == current_tr]
-        all_done      = all(m["status"] == "COMPLETE" for m in round_matches)
-
-        if all_done:
-            total_rounds = int(bracket.get("total_tournament_rounds", 1))
-            winners = [m["winner_id"] for m in round_matches if m["winner_id"]]
-
-            if current_tr >= total_rounds:
-                champion_id = winners[0]
-                bracket["champion_id"] = champion_id
-
-                sessions_table.update_item(
-                    Key={"session_id": session_id, "sk": "METADATA"},
-                    UpdateExpression="SET bracket = :b, #s = :s",
-                    ExpressionAttributeNames={"#s": "status"},
-                    ExpressionAttributeValues={":b": bracket, ":s": "FINISHED"},
-                )
-
-                champion_player = next(
-                    (my_match[f"player{k}_name"]
-                     for m in round_matches if m["winner_id"] == champion_id
-                     for k in range(1, int(m.get("player_count", 2)) + 1)
-                     if m.get(f"player{k}_id") == champion_id),
-                    "Campeón"
-                )
-                broadcast(session_id, "CHAMPION_DECLARED", {
-                    "champion_id":   champion_id,
-                    "champion_name": champion_player,
-                })
-                return
-
-            else:
-                next_tr = current_tr + 1
-                bracket["current_tournament_round"] = next_tr
-
-                sessions_table.update_item(
-                    Key={"session_id": session_id, "sk": "METADATA"},
-                    UpdateExpression="SET bracket = :b, current_round = :r",
-                    ExpressionAttributeValues={":b": bracket, ":r": 1},
-                )
-
-                next_round_matches = [m for m in matches if int(m["tournament_round"]) == next_tr]
-                broadcast(session_id, "TOURNAMENT_ROUND_COMPLETE", {
-                    "next_tournament_round": next_tr,
-                    "new_matches":           next_round_matches,
-                    "bracket":               bracket,
-                })
-                return
-    else:
-        my_match["current_match_round"] = match_round + 1
-
-    sessions_table.update_item(
-        Key={"session_id": session_id, "sk": "METADATA"},
-        UpdateExpression="SET bracket = :b",
-        ExpressionAttributeValues={":b": bracket},
-    )
+    for event, payload in outcome["broadcasts"]:
+        broadcast(session_id, event, payload)
 
 
 # ── Handler ───────────────────────────────────────────────────────────────────

@@ -35,7 +35,7 @@ locals {
     join_session     = { dir = "player", timeout = 10 }
     get_players      = { dir = "player", timeout = 10 }
     submit_move      = { dir = "game", timeout = 10 }
-    resolve_round    = { dir = "game", timeout = 10 }
+    resolve_round    = { dir = "game", timeout = 30 }
     get_round_result = { dir = "game", timeout = 10 }
     generate_bracket = { dir = "tournament", timeout = 10 }
     advance_bracket  = { dir = "tournament", timeout = 10 }

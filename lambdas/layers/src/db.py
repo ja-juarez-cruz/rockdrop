@@ -15,8 +15,11 @@ moves_table = dynamodb.Table(MOVES_TABLE)
 rounds_table = dynamodb.Table(ROUNDS_TABLE)
 
 
-def get_session(session_id: str) -> dict | None:
-    resp = sessions_table.get_item(Key={"session_id": session_id, "sk": "METADATA"})
+def get_session(session_id: str, consistent: bool = False) -> dict | None:
+    resp = sessions_table.get_item(
+        Key={"session_id": session_id, "sk": "METADATA"},
+        ConsistentRead=consistent,
+    )
     return resp.get("Item")
 
 
