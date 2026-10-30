@@ -125,6 +125,7 @@ export default function LobbyPage() {
 
   const playerCount = players.length
   const maxPlayers  = session.max_players ?? 0
+  const hostPlays   = session.host_plays !== false
 
   return (
     <main className="min-h-dvh bg-zinc-50 px-4 py-8 flex flex-col gap-6 max-w-lg mx-auto">
@@ -173,6 +174,11 @@ export default function LobbyPage() {
               {playerCount >= 4 ? 'Modo Torneo (automático)' : 'Modo Todos contra Todos (automático)'}
               {maxPlayers > 0 ? ` · Máx. ${maxPlayers} jugadores` : ''}
             </p>
+            {!hostPlays && (
+              <p className="text-xs text-blue-600 font-medium mb-1">
+                Solo organizas: no entras al juego
+              </p>
+            )}
             <p className="text-sm text-zinc-700 mb-4">
               {playerCount >= 4
                 ? 'Con 4 o más jugadores se genera bracket eliminatorio automáticamente.'

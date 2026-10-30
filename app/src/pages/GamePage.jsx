@@ -82,6 +82,7 @@ export default function GamePage() {
     session,
     players,
     playerId,
+    isHost,
     gamePhase,
     currentRound,
     myMove,
@@ -142,6 +143,8 @@ export default function GamePage() {
   }
 
   const opponents      = players.filter(p => p.player_id !== playerId && p.status !== 'DISCONNECTED')
+  // Host who only organizes: watches the game, can't throw
+  const isSpectator    = isHost && session.host_plays === false
   const connectedCount = players.filter(p => p.status !== 'DISCONNECTED').length
 
   return (
@@ -192,8 +195,16 @@ export default function GamePage() {
         </Card>
       )}
 
+      {/* ── Organizer: watch only ──────────────────────────────────────── */}
+      {isSpectator && (
+        <Card>
+          <p className="text-sm font-medium text-zinc-700">Organizas esta partida</p>
+          <p className="text-xs text-zinc-400 mt-0.5">Sigue las jugadas y la clasificación en vivo</p>
+        </Card>
+      )}
+
       {/* ── Phase: selecting (pick a move) ─────────────────────────────── */}
-      {gamePhase === 'selecting' && (
+      {gamePhase === 'selecting' && !isSpectator && (
         <Card>
           <p className="text-sm font-semibold text-zinc-900 mb-1">Elige tu jugada</p>
           <p className="text-xs text-zinc-400 mb-4">Todos juegan al mismo tiempo</p>

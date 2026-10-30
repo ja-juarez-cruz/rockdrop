@@ -38,17 +38,23 @@ export default function RoundResult({ result, playerId, players, onDismiss, isGa
   const myOutcome = myRow?.outcome ?? 'TIE'
   const isTie     = !winner_id
   const isWin     = myOutcome === 'WIN'
-
-  const bgColor   = isWin ? 'bg-green-50'   : isTie ? 'bg-zinc-50'    : 'bg-red-50'
-  const bigEmoji  = isGameOver
-    ? (isWin ? '🏆' : '🎮')
-    : (isWin ? '🏆' : isTie ? '🤝' : '😓')
-  const headline  = isGameOver
-    ? (isWin ? '¡Ganaste el juego!' : isTie ? 'Empate' : 'Perdiste el juego')
-    : (isWin ? '¡Ganaste!'          : isTie ? 'Empate' : 'Perdiste')
-  const headColor = isWin ? 'text-green-700' : isTie ? 'text-zinc-600' : 'text-red-600'
+  // Organizer watching: not part of the results, show a neutral view
+  const isWatcher = !myRow
 
   const winnerName = rows.find(r => r.isWinner)?.display_name
+
+  const bgColor   = isWin ? 'bg-green-50'   : isTie || isWatcher ? 'bg-zinc-50' : 'bg-red-50'
+  const bigEmoji  = isWatcher
+    ? (isTie ? '🤝' : '🏆')
+    : isGameOver
+      ? (isWin ? '🏆' : '🎮')
+      : (isWin ? '🏆' : isTie ? '🤝' : '😓')
+  const headline  = isWatcher
+    ? (isTie ? 'Empate' : `Gana ${winnerName ?? ''}`.trim())
+    : isGameOver
+      ? (isWin ? '¡Ganaste el juego!' : isTie ? 'Empate' : 'Perdiste el juego')
+      : (isWin ? '¡Ganaste!'          : isTie ? 'Empate' : 'Perdiste')
+  const headColor = isWin ? 'text-green-700' : isTie || isWatcher ? 'text-zinc-600' : 'text-red-600'
 
   return (
     <div

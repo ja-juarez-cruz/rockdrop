@@ -38,6 +38,11 @@ def get_all_players(session_id: str) -> list[dict]:
     return resp.get("Items", [])
 
 
+def get_game_players(session_id: str) -> list[dict]:
+    """Players that take part in the game (excludes a host who only organizes)."""
+    return [p for p in get_all_players(session_id) if not p.get("is_spectator")]
+
+
 def get_player_by_connection(connection_id: str) -> dict | None:
     resp = players_table.query(
         IndexName="connection-index",

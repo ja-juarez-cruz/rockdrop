@@ -49,7 +49,8 @@ class CreateSessionRequest(BaseModel):
     host_player_id: str
     display_name: str
     mode: GameMode = GameMode.FREE_FOR_ALL
-    max_players: int = Field(default=32, ge=2, le=100)
+    max_players: int = Field(default=16, ge=2, le=16)  # sin contar al host si solo organiza
+    host_plays: bool = True  # False → el host solo organiza (espectador), no entra al juego
 
 
 class JoinSessionRequest(BaseModel):

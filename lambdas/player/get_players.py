@@ -3,7 +3,7 @@ import json
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
-from db import get_session, get_all_players
+from db import get_session, get_game_players
 from models import ok, err, make_response
 
 logger = Logger()
@@ -19,7 +19,7 @@ def handler(event: dict, context: LambdaContext) -> dict:
     if not session:
         return make_response(404, err("Session not found"))
 
-    players = get_all_players(session_id)
+    players = get_game_players(session_id)
     safe_players = [
         {
             "player_id": p["player_id"],

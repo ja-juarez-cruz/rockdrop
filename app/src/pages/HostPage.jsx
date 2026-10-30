@@ -3,7 +3,7 @@
  *
  * Host creates a new session from the browser (dev / demo flow).
  * Steps:
- *   1. Form: display_name, max_players (modo auto-determinado al iniciar)
+ *   1. Form: display_name, host_plays, max_players (modo auto-determinado al iniciar)
  *   2. POST /sessions → show QR + join URL
  *   3. "Ir al lobby" → /lobby/:sessionId
  */
@@ -17,6 +17,7 @@ import Card from '../components/ui/Card.jsx'
 import QRDisplay from '../components/lobby/QRDisplay.jsx'
 
 const HOST_PLAYER_ID_KEY = 'rockdrop_host_player_id'
+const MAX_PLAYERS        = 16
 
 function getOrCreateHostId() {
   let id = localStorage.getItem(HOST_PLAYER_ID_KEY)
@@ -35,7 +36,8 @@ export default function HostPage() {
 
   // Form state
   const [displayName, setDisplayName] = useState('')
-  const [maxPlayers, setMaxPlayers]   = useState(10)
+  const [maxPlayers, setMaxPlayers]   = useState(MAX_PLAYERS)
+  const [hostPlays, setHostPlays]     = useState(true)
   const [loading, setLoading]         = useState(false)
   const [error, setError]             = useState('')
 
@@ -56,6 +58,7 @@ export default function HostPage() {
         host_player_id: hostPlayerId,
         display_name:   displayName.trim(),
         max_players:    maxPlayers,
+        host_plays:     hostPlays,
       })
 
       // data: { session_id, qr_token, ws_url, join_url }
@@ -104,7 +107,7 @@ export default function HostPage() {
             {/* Display name */}
             <div className="flex flex-col gap-1.5">
               <label htmlFor="host_name" className="text-sm font-medium text-zinc-700">
-                Tu nombre
+                {hostPlays ? 'Tu nombre' : 'Tu nombre (organizador)'}
               </label>
               <input
                 id="host_name"
@@ -126,6 +129,23 @@ export default function HostPage() {
               />
             </div>
 
+            {/* Host plays or only organizes */}
+            <label className="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={!hostPlays}
+                onChange={(e) => setHostPlays(!e.target.checked)}
+                disabled={loading}
+                className="mt-0.5 h-4 w-4 accent-blue-600"
+              />
+              <span className="flex flex-col">
+                <span className="text-sm font-medium text-zinc-700">Solo organizar (no juego)</span>
+                <span className="text-xs text-zinc-400">
+                  Inicias la partida y la sigues en vivo sin entrar al bracket.
+                </span>
+              </span>
+            </label>
+
             {/* Max players */}
             <div className="flex flex-col gap-2">
               <div className="flex justify-between items-center">
@@ -140,7 +160,7 @@ export default function HostPage() {
                 id="max_players"
                 type="range"
                 min={2}
-                max={30}
+                max={MAX_PLAYERS}
                 step={1}
                 value={maxPlayers}
                 onChange={(e) => setMaxPlayers(Number(e.target.value))}
@@ -149,7 +169,7 @@ export default function HostPage() {
               />
               <div className="flex justify-between text-xs text-zinc-400">
                 <span>2</span>
-                <span>30</span>
+                <span>{MAX_PLAYERS}</span>
               </div>
             </div>
 

@@ -25,7 +25,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
-from db import get_session, moves_table, get_all_players
+from db import get_session, moves_table, get_game_players
 from ws import broadcast
 from models import SubmitMoveRequest, ok, err, make_response, json_dumps
 
@@ -151,6 +151,11 @@ def _submit_free_for_all(session_id, body, session):
     # PK única por (sesión, ronda global) — todos los jugadores escriben al mismo PK
     pk = f"{session_id}#{body.round_number}"
 
+    # El host que solo organiza (is_spectator) no participa
+    all_players = get_game_players(session_id)
+    if body.player_id not in {p["player_id"] for p in all_players}:
+        return make_response(403, err("Player is not part of this game"))
+
     try:
         moves_table.put_item(
             Item={
@@ -166,7 +171,6 @@ def _submit_free_for_all(session_id, body, session):
         return make_response(409, err("Move already submitted for this round"))
 
     # Solo jugadores CONNECTED cuentan como "pendientes"; los DISCONNECTED no bloquean la ronda
-    all_players = get_all_players(session_id)
     active = [p for p in all_players if p.get("status") == "CONNECTED"]
 
     from boto3.dynamodb.conditions import Key

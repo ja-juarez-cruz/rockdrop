@@ -6,7 +6,7 @@ from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from jose import JWTError
 
-from db import get_session, players_table, get_all_players
+from db import get_session, players_table, get_game_players
 from auth import validate_qr_token
 from ws import broadcast
 from models import JoinSessionRequest, ok, err, make_response
@@ -44,7 +44,7 @@ def handler(event: dict, context: LambdaContext) -> dict:
     if session["status"] != "WAITING":
         return make_response(409, err("Session is not accepting players"))
 
-    current_players = get_all_players(session_id)
+    current_players = get_game_players(session_id)
     if len(current_players) >= int(session["max_players"]):
         return make_response(409, err("Session is full"))
 

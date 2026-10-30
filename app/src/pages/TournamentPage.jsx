@@ -120,6 +120,8 @@ export default function TournamentPage() {
     !(isHost && hostDismissedElim)
 
   const currentTournamentRound = bracket.current_tournament_round ?? 1
+  // Host who only organizes: never has a match, just follows the bracket
+  const isSpectator = isHost && session.host_plays === false
 
   return (
     <main className="min-h-dvh bg-zinc-50 px-4 py-6 flex flex-col gap-5 max-w-lg mx-auto">
@@ -157,13 +159,13 @@ export default function TournamentPage() {
           <h1 className="text-xl font-extrabold text-zinc-900">
             {myMatch
               ? `Partido — ronda ${myMatch.current_match_round ?? 1}`
-              : eliminatedBy
+              : eliminatedBy || isSpectator
                 ? 'Modo espectador'
                 : 'Torneo en curso'}
           </h1>
         </div>
         <Badge variant={myMatch ? 'connected' : 'waiting'}>
-          {myMatch ? 'Tu turno' : eliminatedBy ? 'Eliminado' : 'Espera'}
+          {myMatch ? 'Tu turno' : isSpectator ? 'Organizador' : eliminatedBy ? 'Eliminado' : 'Espera'}
         </Badge>
       </div>
 
@@ -229,9 +231,16 @@ export default function TournamentPage() {
           )}
         </Card>
       ) : (
-        /* No active match: winner waiting or eliminated host spectating */
+        /* No active match: organizer, winner waiting or eliminated host spectating */
         <Card>
-          {eliminatedBy ? (
+          {isSpectator ? (
+            <div className="flex flex-col gap-1 py-2">
+              <p className="text-sm font-medium text-zinc-700">Organizas este torneo</p>
+              <p className="text-xs text-zinc-400">
+                Sigue las partidas en vivo en el bracket
+              </p>
+            </div>
+          ) : eliminatedBy ? (
             <div className="flex flex-col gap-1 py-2">
               <p className="text-sm font-medium text-zinc-700">
                 Fuiste eliminado por{' '}

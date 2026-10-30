@@ -4,7 +4,7 @@ import random
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
-from db import get_session, sessions_table, get_all_players
+from db import get_session, sessions_table, get_game_players
 from ws import broadcast
 from models import ok, err, make_response
 
@@ -156,7 +156,7 @@ def handler(event: dict, context: LambdaContext) -> dict:
     if session.get("status") != "WAITING":
         return make_response(409, err(f"Session is already {session.get('status')}"))
 
-    players = get_all_players(session_id)
+    players = get_game_players(session_id)
     if len(players) < 2:
         return make_response(409, err("Need at least 2 players to start"))
 
