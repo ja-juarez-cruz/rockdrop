@@ -109,14 +109,11 @@ def _fill_winner_slot(from_match_id, winner_id, winner_name, all_matches):
     for m in all_matches:
         if from_match_id not in m.get("source_matches", []):
             continue
-        idx = m["source_matches"].index(from_match_id)
-        if idx == 0:
-            m["player1_id"]   = winner_id
-            m["player1_name"] = winner_name
-        else:
-            m["player2_id"]   = winner_id
-            m["player2_name"] = winner_name
-        if m["player1_id"] and m["player2_id"]:
+        slot = m["source_matches"].index(from_match_id) + 1
+        m[f"player{slot}_id"]   = winner_id
+        m[f"player{slot}_name"] = winner_name
+        player_count = int(m.get("player_count", 2))
+        if all(m.get(f"player{k}_id") for k in range(1, player_count + 1)):
             m["status"] = "ACTIVE"
         break
 
