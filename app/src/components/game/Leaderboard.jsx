@@ -2,16 +2,29 @@
  * Leaderboard — ranked score table.
  *
  * Props:
- *   players   array of { player_id, display_name, score, status }
- *   playerId  string   — current client's player_id (highlighted)
+ *   players    array of { player_id, display_name, score, status, ... }
+ *   playerId   string   — current client's player_id (highlighted)
+ *   columns    [{ key, label, aria }] numeric columns to show (default: score)
+ *   presorted  boolean  — keep the given order instead of sorting by score
  */
 
 import Badge from '../ui/Badge.jsx'
 
 const MEDALS = ['🥇', '🥈', '🥉']
 
-export default function Leaderboard({ players = [], playerId }) {
-  const sorted = [...players].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+const DEFAULT_COLUMNS = [{ key: 'score', label: 'Pts', aria: 'puntos' }]
+
+// Literal class names so Tailwind keeps them
+const GRID_COLS = {
+  1: 'grid-cols-[2rem_1fr_auto]',
+  2: 'grid-cols-[2rem_1fr_4rem_4rem]',
+}
+
+export default function Leaderboard({ players = [], playerId, columns = DEFAULT_COLUMNS, presorted = false }) {
+  const sorted = presorted
+    ? players
+    : [...players].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+  const gridCols = GRID_COLS[columns.length] ?? GRID_COLS[1]
 
   if (sorted.length === 0) {
     return (
@@ -29,12 +42,16 @@ export default function Leaderboard({ players = [], playerId }) {
     >
       {/* Header */}
       <div
-        className="grid grid-cols-[2rem_1fr_auto] gap-3 px-4 py-2.5 bg-zinc-50 border-b border-zinc-200"
+        className={`grid ${gridCols} gap-3 px-4 py-2.5 bg-zinc-50 border-b border-zinc-200`}
         role="row"
       >
         <span className="text-xs font-semibold text-zinc-400 uppercase" role="columnheader">#</span>
         <span className="text-xs font-semibold text-zinc-400 uppercase" role="columnheader">Jugador</span>
-        <span className="text-xs font-semibold text-zinc-400 uppercase" role="columnheader">Pts</span>
+        {columns.map(col => (
+          <span key={col.key} className="text-xs font-semibold text-zinc-400 uppercase text-right" role="columnheader">
+            {col.label}
+          </span>
+        ))}
       </div>
 
       {/* Rows */}
@@ -48,7 +65,7 @@ export default function Leaderboard({ players = [], playerId }) {
             role="row"
             aria-current={isMe ? 'true' : undefined}
             className={[
-              'grid grid-cols-[2rem_1fr_auto] gap-3 items-center px-4 py-3',
+              `grid ${gridCols} gap-3 items-center px-4 py-3`,
               'border-b border-zinc-100 last:border-b-0',
               isMe ? 'bg-blue-50' : 'bg-white hover:bg-zinc-50',
             ].join(' ')}
@@ -84,17 +101,21 @@ export default function Leaderboard({ players = [], playerId }) {
               )}
             </div>
 
-            {/* Score */}
-            <span
-              role="cell"
-              aria-label={`${player.score ?? 0} puntos`}
-              className={[
-                'text-sm font-bold tabular-nums',
-                isMe ? 'text-blue-600' : 'text-zinc-900',
-              ].join(' ')}
-            >
-              {player.score ?? 0}
-            </span>
+            {/* Numeric columns */}
+            {columns.map((col, i) => (
+              <span
+                key={col.key}
+                role="cell"
+                aria-label={`${player[col.key] ?? 0} ${col.aria}`}
+                className={[
+                  'text-sm tabular-nums text-right',
+                  i === 0 ? 'font-bold' : 'font-medium',
+                  isMe ? 'text-blue-600' : i === 0 ? 'text-zinc-900' : 'text-zinc-500',
+                ].join(' ')}
+              >
+                {player[col.key] ?? 0}
+              </span>
+            ))}
           </div>
         )
       })}

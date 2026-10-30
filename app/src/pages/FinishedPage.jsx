@@ -2,7 +2,8 @@
  * FinishedPage — /finished/:sessionId
  *
  * Shows:
- *   - Tournament mode: champion banner + final bracket
+ *   - Tournament mode: champion banner + final bracket + standings
+ *     (matches won / rounds won, derived from the bracket)
  *   - FREE_FOR_ALL mode: final leaderboard with winner on top
  */
 
@@ -14,6 +15,12 @@ import Leaderboard from '../components/game/Leaderboard.jsx'
 import Bracket from '../components/tournament/Bracket.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
 import Card from '../components/ui/Card.jsx'
+import { tournamentStandings } from '../lib/standings.js'
+
+const TOURNAMENT_COLUMNS = [
+  { key: 'matches_won', label: 'Partidos', aria: 'partidos ganados' },
+  { key: 'rounds_won',  label: 'Rondas',   aria: 'rondas ganadas' },
+]
 
 function WinnerBanner({ name, isMe }) {
   return (
@@ -142,8 +149,23 @@ export default function FinishedPage() {
         </Card>
       )}
 
-      {/* Leaderboard (always show for FREE_FOR_ALL; also for tournament as summary) */}
-      {(!isTournament || players.some(p => p.score > 0)) && (
+      {/* Final standings */}
+      {isTournament && bracket ? (
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-700 mb-1">
+            Clasificación final
+          </h2>
+          <p className="text-xs text-zinc-400 mb-3">
+            Partidos ganados en el torneo · rondas ganadas sumando todos sus partidos (los números del bracket)
+          </p>
+          <Leaderboard
+            players={tournamentStandings(bracket, players)}
+            playerId={playerId}
+            columns={TOURNAMENT_COLUMNS}
+            presorted
+          />
+        </div>
+      ) : !isTournament && (
         <div>
           <h2 className="text-sm font-semibold text-zinc-700 mb-3">
             Clasificación final
